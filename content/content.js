@@ -160,9 +160,15 @@
   }
 
   // ===== 通用字段采集引擎（三轮扫描） =====
-  function collectFields() {
-    const fields = [];
-    const collected = new Set();
+  function scanFieldElements() {
+    const elements = [];
+    const seen = new Set();
+
+    function push(el) {
+      if (seen.has(el)) return;
+      seen.add(el);
+      elements.push(el);
+    }
 
     // 第一轮：原生表单元素
     document.querySelectorAll('input, select, textarea').forEach(el => {
@@ -170,7 +176,7 @@
       if (['hidden', 'submit', 'button', 'image', 'file', 'password', 'checkbox', 'radio'].includes(type)) return;
       if (!isVisible(el)) return;
       if (el.closest('#resume-autofill-btn')) return;
-      addField(el, collected, fields);
+      push(el);
     });
 
     // 第二轮：自定义组件（ARIA 语义 + 类名模式 + contenteditable）
@@ -186,16 +192,25 @@
       if (el.closest('#resume-autofill-btn')) return;
       // 如果内部的原生 input 已采集，跳过外层容器
       const innerInput = el.querySelector('input:not([type="hidden"]):not([type="submit"])');
-      if (innerInput && collected.has(innerInput)) return;
-      addField(el, collected, fields);
+      if (innerInput && seen.has(innerInput)) return;
+      push(el);
     });
 
     // 第三轮：框架绑定的隐藏字段（Vue/React/Angular）
     document.querySelectorAll('[data-field], [formcontrolname], [v-model], [ng-model], [formControlName]').forEach(el => {
-      if (!isVisible(el) || collected.has(el)) return;
-      addField(el, collected, fields);
+      if (!isVisible(el) || seen.has(el)) return;
+      push(el);
     });
 
+    return elements;
+  }
+
+  function collectFields() {
+    const fields = [];
+    const collected = new Set();
+    for (const el of scanFieldElements()) {
+      addField(el, collected, fields);
+    }
     return fields;
   }
 
@@ -246,6 +261,88 @@
       if (opts.size > 0) return Array.from(opts);
     }
     return [];
+  }
+
+  // ===== 简历页面检测（按需显示按钮） =====
+  const RESUME_STRONG = [
+    // 中文：简历/求职特有
+    '简历', '求职意向', '期望', '学历', '学位', '毕业院校', '工作经历', '实习经历',
+    '教育经历', '项目经历', '工作经验', '自我评价', '招聘', '投递', '应聘', '求职',
+    '职位', '岗位', '到岗时间', '政治面貌', '薪资',
+    // 英文：词边界匹配
+    'resume', 'apply', 'job', 'jobs', 'career', 'careers', 'recruit', 'candidate'
+  ];
+  const RESUME_MEDIUM = [
+    '姓名', '手机', '电话', '邮箱', '性别', '出生日期', '籍贯', '户籍', '民族', '婚姻',
+    '所在城市', '现居住', '学校', '专业', '技能', '证书', '语言',
+    'name', 'phone', 'email', 'school', 'major', 'city', 'location'
+  ];
+  const NEGATIVE_KEYWORDS = [
+    '登录', '注册', '密码', '验证码', '搜索', '评论', '记住我', '忘记密码',
+    'login', 'password', 'captcha', 'register', 'search', 'comment'
+  ];
+
+  function keywordHitCount(text, keywords) {
+    const lower = text.toLowerCase();
+    let n = 0;
+    for (const kw of keywords) {
+      if (/[a-z]/.test(kw)) {
+        if (new RegExp('\\b' + kw + '\\b').test(lower)) n++;
+      } else if (lower.includes(kw)) {
+        n++;
+      }
+    }
+    return n;
+  }
+
+  // 搜索框类字段（最大的误判源：搜索页）
+  function isSearchLikeField(el) {
+    if (el.type === 'search') return true;
+    if (el.getAttribute('role') === 'searchbox') return true;
+    const text = ((el.name || '') + ' ' + getLabelText(el) + ' ' + getPlaceholder(el)).toLowerCase();
+    return /search|query|keyword|搜索/.test(text);
+  }
+
+  // 轻量字段描述（不生成 selector/options，供检测用）
+  function collectFieldsForDetection() {
+    const descs = [];
+    for (const el of scanFieldElements()) {
+      const desc = {
+        label: getLabelText(el),
+        placeholder: getPlaceholder(el),
+        name: el.name || el.getAttribute('name') || el.getAttribute('formcontrolname') || '',
+        contextText: getContextText(el),
+        isSearchLike: isSearchLikeField(el)
+      };
+      if (desc.label || desc.placeholder || desc.name || desc.contextText) descs.push(desc);
+    }
+    return descs;
+  }
+
+  function isResumePage() {
+    const pageText = location.href + ' ' + (document.title || '');
+    // 正信号只看 URL（标题太吵：一篇含 "career" 的博客文章也会命中）
+    const urlStrong = keywordHitCount(location.href, RESUME_STRONG);
+    const pageNeg = keywordHitCount(pageText, NEGATIVE_KEYWORDS);
+
+    const usable = collectFieldsForDetection().filter(d => !d.isSearchLike);
+    if (usable.length === 0) return false;
+
+    let fStrong = 0, fMedium = 0, fNeg = 0;
+    for (const d of usable) {
+      const combo = d.label + ' ' + d.placeholder + ' ' + d.name + ' ' + d.contextText;
+      fStrong += keywordHitCount(combo, RESUME_STRONG);
+      fMedium += keywordHitCount(combo, RESUME_MEDIUM);
+      fNeg += keywordHitCount(combo, NEGATIVE_KEYWORDS);
+    }
+
+    // 纯登录/搜索/评论页：即使有"邮箱/姓名"等中等信号也拦掉；
+    // 但字段丰富的表单（中等信号≥3，如校园招聘的"register"登记页）应放行
+    if ((pageNeg > 0 || fNeg > 0) && urlStrong === 0 && fStrong === 0 && fMedium < 3) return false;
+
+    // 主规则：字段信号足够（强≥1 或 中等≥2）；
+    // 或 URL 是招聘页（job/apply/简历…）且字段至少有一个个人信息信号，避免职业博客正文页误显示
+    return fStrong >= 1 || fMedium >= 2 || (urlStrong >= 1 && (fStrong >= 1 || fMedium >= 1));
   }
 
   // ===== 通用标签检测 =====
@@ -562,6 +659,63 @@
     });
   }
 
+  // ===== 按需显示：检测 + SPA 复查 =====
+  function debounce(fn, delay) {
+    let timer = null;
+    const wrapped = () => {
+      clearTimeout(timer);
+      timer = setTimeout(fn, delay);
+    };
+    wrapped.cancel = () => clearTimeout(timer);
+    return wrapped;
+  }
+
+  let observer = null;
+  let debouncedCheck = null;
+  let giveUpTimer = null;
+
+  function tryShow() {
+    if (document.getElementById('resume-autofill-btn')) return true;
+    if (isResumePage()) {
+      createFloatingButton();
+      teardown();
+      return true;
+    }
+    return false;
+  }
+
+  function onMutations() { debouncedCheck(); }
+
+  function onRouteChange() {
+    debouncedCheck.cancel();
+    tryShow();
+  }
+
+  function armObserver() {
+    teardown();
+    debouncedCheck = debounce(tryShow, 1200);
+    observer = new MutationObserver(onMutations);
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+    window.addEventListener('popstate', onRouteChange);
+    window.addEventListener('hashchange', onRouteChange);
+    // 60 秒内未识别则停止观察，避免巨型页面无限扫描
+    giveUpTimer = setTimeout(() => {
+      if (observer) { observer.disconnect(); observer = null; }
+    }, 60000);
+  }
+
+  function teardown() {
+    if (observer) { observer.disconnect(); observer = null; }
+    if (debouncedCheck) debouncedCheck.cancel();
+    if (giveUpTimer) clearTimeout(giveUpTimer);
+    window.removeEventListener('popstate', onRouteChange);
+    window.removeEventListener('hashchange', onRouteChange);
+  }
+
+  function startDetection() {
+    if (!tryShow()) armObserver();
+  }
+
   // ===== 初始化 =====
-  createFloatingButton();
+  startDetection();
 })();
