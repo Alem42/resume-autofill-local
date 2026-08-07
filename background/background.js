@@ -43,10 +43,8 @@ async function getLLMConfig() {
   });
 }
 
-// 从文本中提取完整 JSON（通过括号配对）
-function extractJSON(text, openChar, closeChar) {
-  const start = text.indexOf(openChar);
-  if (start === -1) return null;
+// 找到从 start 开始、括号配对的结束位置；找不到返回 -1
+function matchBracket(text, start, openChar, closeChar) {
   let depth = 0;
   let inString = false;
   let escape = false;
@@ -57,7 +55,72 @@ function extractJSON(text, openChar, closeChar) {
     if (ch === '"') { inString = !inString; continue; }
     if (inString) continue;
     if (ch === openChar) depth++;
-    if (ch === closeChar) { depth--; if (depth === 0) return text.slice(start, i + 1); }
+    if (ch === closeChar) { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+// 从文本中提取完整 JSON（通过括号配对）
+function extractJSON(text, openChar, closeChar) {
+  const start = text.indexOf(openChar);
+  if (start === -1) return null;
+  const end = matchBracket(text, start, openChar, closeChar);
+  return end === -1 ? null : text.slice(start, end + 1);
+}
+
+// 候选数组是否"长得像"填充映射：元素是含 value/fieldId/selector 的对象（排除正文里的 [1] 这类数字数组）
+function looksLikeMappings(arr) {
+  if (arr.length === 0) return true;
+  return arr.every(el =>
+    el && typeof el === 'object' && !Array.isArray(el) &&
+    ('value' in el || 'fieldId' in el || 'selector' in el)
+  );
+}
+
+// 解析 LLM 返回的 JSON 数组：兼容 markdown 代码块、{mappings:[...]} 包裹对象、单个对象、正文夹带括号
+function parseLLMArray(text) {
+  let t = text.trim();
+  const fence = t.match(/```[a-z]*\s*([\s\S]*?)```/i);
+  if (fence) t = fence[1].trim();
+
+  // 依次尝试每个 '[' 起始位置，返回第一个"能解析且像映射数组"的（避免正文里先出现 [1] 这类括号噪声）
+  let start = t.indexOf('[');
+  while (start !== -1) {
+    const end = matchBracket(t, start, '[', ']');
+    if (end !== -1) {
+      try {
+        const parsed = JSON.parse(t.slice(start, end + 1));
+        if (looksLikeMappings(parsed)) return parsed;
+      } catch {}
+    }
+    start = t.indexOf('[', start + 1);
+  }
+  // 文本完全没有 '[' → 可能是单个对象 {fieldId,value} 或包裹对象；包成数组返回。
+  // 注意：截断的数组（有 '[' 但括号不配对）不走到这里，会报错让用户重试，避免静默只填第一项
+  if (!t.includes('[')) {
+    const obj = extractJSON(t, '{', '}');
+    if (obj) {
+      try {
+        const parsed = JSON.parse(obj);
+        if (Array.isArray(parsed)) return parsed;
+        for (const k of Object.keys(parsed)) {
+          if (Array.isArray(parsed[k])) return parsed[k];
+        }
+        return [parsed];
+      } catch {}
+    }
+  }
+  return null;
+}
+
+// 解析 LLM 返回的 JSON 对象（兼容 markdown 代码块）
+function parseLLMObject(text) {
+  let t = text.trim();
+  const fence = t.match(/```[a-z]*\s*([\s\S]*?)```/i);
+  if (fence) t = fence[1].trim();
+  const obj = extractJSON(t, '{', '}');
+  if (obj) {
+    try { return JSON.parse(obj); } catch {}
   }
   return null;
 }
@@ -94,7 +157,8 @@ async function callLLM(systemPrompt, userPrompt) {
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt }
           ],
-          temperature: 0.1
+          temperature: 0.1,
+          max_tokens: 4096 // 限制最大输出，避免模型冗长输出拖慢识别
         }),
         signal: controller.signal
       });
@@ -187,22 +251,24 @@ async function handleFillForm(fields, profile) {
 规则：
 1. 仔细分析每个字段的上下文信息（标签、占位符、name等），判断它需要哪类信息
 2. 从用户简历中选择最匹配的值
-3. 返回一个 JSON 数组，每个元素包含 {selector, value, componentType}
-   - selector: 字段的 CSS 选择器（与输入数据中的 selector 完全一致）
+3. 返回一个 JSON 数组，每个元素包含 {fieldId, value}
+   - fieldId: 字段的 ID（与输入数据中"字段ID"完全一致，如 F0、F12）
    - value: 要填充的值（字符串）
-   - componentType: 字段的组件类型（与输入数据中的组件类型一致）
 4. 只有当用户简历中确实存在对应信息时才填充该字段。用户简历中为空的信息（字段缺失、空字符串、空数组），对应页面字段一律跳过，禁止从可选项或上下文推断、编造填充值
 5. 对于有可选项的下拉框，仅当用户简历中的信息能在可选项中匹配到最接近的值时才选择；否则跳过
 6. 宁缺毋滥：即使页面字段是必填项，只要用户简历没有对应信息，也要跳过，不要为了填满而填
 7. 只返回 JSON 数组，不要返回任何其他文字或解释`;
 
-  const fieldsDesc = fields.map(f => {
-    const parts = [`选择器: ${f.selector}`];
+  // 用简短字段ID代替长 CSS 选择器：提示词与响应体量都大幅缩小，显著加快识别
+  const fieldById = new Map();
+  const fieldsDesc = fields.map((f, i) => {
+    fieldById.set('F' + i, f);
+    const parts = [`字段ID: F${i}`];
     if (f.label) parts.push(`标签: ${f.label}`);
     if (f.placeholder) parts.push(`占位符: ${f.placeholder}`);
     if (f.name) parts.push(`name: ${f.name}`);
     if (f.contextText) parts.push(`上下文文本: ${f.contextText}`);
-    if (f.options && f.options.length > 0) parts.push(`可选项: ${f.options.join(', ')}`);
+    if (f.options && f.options.length > 0) parts.push(`可选项: ${f.options.slice(0, 40).join(', ')}`);
     parts.push(`组件类型: ${f.componentType || f.tag || 'unknown'}`);
     return `{${parts.join('; ')}}`;
   }).join('\n');
@@ -219,13 +285,31 @@ ${profileDesc}
 
   const responseText = await callLLM(systemPrompt, userPrompt);
 
-  // 提取 JSON 数组（通过括号配对，避免贪婪匹配问题）
-  const jsonStr = extractJSON(responseText, '[', ']');
-  if (!jsonStr) {
-    throw new Error('LLM 返回格式异常，无法解析填充映射');
+  // 解析 LLM 返回的 JSON 数组（兼容 markdown 围栏、包裹对象、单个对象）
+  const parsed = parseLLMArray(responseText);
+  if (!parsed) {
+    throw new Error(`LLM 返回格式异常，无法解析填充映射：${responseText.slice(0, 120)}`);
   }
 
-  const mappings = JSON.parse(jsonStr);
+  // 将 fieldId 还原为真实 selector，并沿用采集时的组件类型（比 LLM 回显更可靠）
+  const mappings = parsed
+    .filter(m => m && m.value !== null && m.value !== undefined && m.value !== '')
+    .map(m => {
+      let field = null;
+      if (m.fieldId != null) {
+        const raw = String(m.fieldId);
+        field = fieldById.get(raw) || fieldById.get('F' + raw);
+      }
+      if (field) {
+        return { selector: field.selector, value: String(m.value), componentType: field.componentType };
+      }
+      // 兼容个别模型不遵守约定、直接返回 selector 的情况
+      if (m.selector) {
+        return { selector: m.selector, value: String(m.value), componentType: m.componentType || undefined };
+      }
+      return null;
+    })
+    .filter(Boolean);
   return { mappings };
 }
 
@@ -323,13 +407,11 @@ async function handleParsePDF(pdfText) {
 
   const responseText = await callLLM(systemPrompt, userPrompt);
 
-  // 提取 JSON 对象
-  const jsonStr = extractJSON(responseText, '{', '}');
-  if (!jsonStr) {
-    throw new Error('LLM 返回格式异常，无法解析简历数据');
+  // 解析 LLM 返回的 JSON 对象（兼容 markdown 围栏）
+  const profile = parseLLMObject(responseText);
+  if (!profile) {
+    throw new Error(`LLM 返回格式异常，无法解析简历数据：${responseText.slice(0, 120)}`);
   }
-
-  const profile = JSON.parse(jsonStr);
 
   // 持久化解析结果：弹窗在解析期间被关闭时，下次打开可重新应用
   try {
