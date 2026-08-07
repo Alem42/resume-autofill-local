@@ -57,16 +57,16 @@
   // ===== 点击处理 =====
   async function handleClick() {
     const btn = document.getElementById('resume-autofill-btn');
+    let ticker = null;
 
     if (btn.classList.contains('result')) {
-      updateButtonText(btn, '撤回中...', 'loading');
-      await undoFill();
+      await undoFill(btn);
       return;
     }
 
-    updateButtonText(btn, '识别中...', 'loading');
-
     try {
+      // 阶段 1：采集表单字段
+      updateButtonText(btn, '采集字段中...', 'loading');
       const fields = collectFields();
 
       if (fields.length === 0) {
@@ -75,38 +75,59 @@
         return;
       }
 
+      // 阶段 2：读取简历数据
+      updateButtonText(btn, '读取简历中...', 'loading');
       const profile = await getProfile();
 
-      chrome.runtime.sendMessage({
-        type: 'FILL_FORM', fields, profile
-      }, response => {
-        if (chrome.runtime.lastError) {
-          updateButtonText(btn, '通信失败', 'error');
-          console.error('[简历填充]', chrome.runtime.lastError.message);
-          setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
-          return;
-        }
-        if (!response) {
-          updateButtonText(btn, '无响应', 'error');
-          setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
-          return;
-        }
-        if (response.error) {
-          const errText = response.error.length > 30 ? response.error.slice(0, 28) + '...' : response.error;
-          updateButtonText(btn, errText, 'error');
-          console.error('[简历填充]', response.error);
-          setTimeout(() => updateButtonText(btn, '自动填充', ''), 5000);
-          return;
-        }
+      // 阶段 3：AI 识别（网络慢时显示已等待秒数，缓解等待焦虑）
+      updateButtonText(btn, '识别中...', 'loading');
+      let waitSec = 0;
+      ticker = setInterval(() => {
+        waitSec++;
+        updateButtonText(btn, `识别中... ${waitSec}s`, 'loading');
+      }, 1000);
 
-        executeFill(response.mappings || []).then(count => {
-          updateButtonText(btn, `已填充 ${count}/${fields.length} 个字段（点击撤回）`, 'result');
+      const response = await new Promise(resolve => {
+        chrome.runtime.sendMessage({ type: 'FILL_FORM', fields, profile }, resp => {
+          if (chrome.runtime.lastError) {
+            resolve({ __commError: chrome.runtime.lastError.message });
+            return;
+          }
+          resolve(resp);
         });
       });
+
+      if (response && response.__commError) {
+        updateButtonText(btn, '通信失败', 'error');
+        console.error('[简历填充]', response.__commError);
+        setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
+        return;
+      }
+      if (!response) {
+        updateButtonText(btn, '无响应', 'error');
+        setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
+        return;
+      }
+      if (response.error) {
+        const errText = response.error.length > 30 ? response.error.slice(0, 28) + '...' : response.error;
+        updateButtonText(btn, errText, 'error');
+        console.error('[简历填充]', response.error);
+        setTimeout(() => updateButtonText(btn, '自动填充', ''), 5000);
+        return;
+      }
+
+      // 阶段 4：逐字段填充，显示进度
+      const mappings = response.mappings || [];
+      const count = await executeFill(mappings, (done, total) => {
+        updateButtonText(btn, `填充中 ${done}/${total}`, 'loading');
+      });
+      updateButtonText(btn, `已填充 ${count}/${fields.length} 个字段（点击撤回）`, 'result');
     } catch (err) {
       updateButtonText(btn, '出错了', 'error');
       console.error('[简历填充]', err);
       setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
+    } finally {
+      if (ticker) clearInterval(ticker);
     }
   }
 
@@ -454,15 +475,23 @@
   }
 
   // ===== 填充执行 =====
-  async function executeFill(mappings) {
+  async function executeFill(mappings, onProgress) {
     let count = 0;
     const undoData = [];
+    const total = mappings.length;
 
-    for (const mapping of mappings) {
+    for (let i = 0; i < mappings.length; i++) {
+      const mapping = mappings[i];
       // 防御：LLM 返回空值时跳过，避免填充空字段
-      if (mapping.value === null || mapping.value === undefined || mapping.value === '') continue;
+      if (mapping.value === null || mapping.value === undefined || mapping.value === '') {
+        if (onProgress) onProgress(i + 1, total);
+        continue;
+      }
       const el = findElement(mapping.selector);
-      if (!el) continue;
+      if (!el) {
+        if (onProgress) onProgress(i + 1, total);
+        continue;
+      }
 
       const value = String(mapping.value);
       const componentType = mapping.componentType || detectComponentType(el);
@@ -477,6 +506,7 @@
       } catch (e) {
         console.warn('[简历填充] 填充失败:', mapping.selector, componentType, e);
       }
+      if (onProgress) onProgress(i + 1, total);
       await sleep(150);
     }
 
@@ -618,14 +648,17 @@
   }
 
   // ===== 撤回（恢复原值） =====
-  async function undoFill() {
-    for (const { selector, originalValue, componentType } of filledFields) {
+  async function undoFill(btn) {
+    const total = filledFields.length;
+    for (let i = 0; i < filledFields.length; i++) {
+      const { selector, originalValue, componentType } = filledFields[i];
       const el = findElement(selector);
-      if (!el) continue;
-      try { await fillByType(el, originalValue || '', componentType); } catch {}
+      if (el) {
+        try { await fillByType(el, originalValue || '', componentType); } catch {}
+      }
+      if (btn) updateButtonText(btn, `撤回中 ${i + 1}/${total}`, 'loading');
     }
     filledFields = [];
-    const btn = document.getElementById('resume-autofill-btn');
     if (btn) updateButtonText(btn, '自动填充', '');
   }
 
