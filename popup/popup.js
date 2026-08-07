@@ -172,8 +172,9 @@ function createWorkCard(data, index) {
       <span class="entry-title">工作经历 ${index + 1}</span>
       <button class="btn-remove" title="删除">×</button>
     </div>
-    <div class="field-row">
+    <div class="field-row field-row-3">
       <div class="field"><label>公司</label><input type="text" data-key="company" value="${esc(data.company)}"></div>
+      <div class="field"><label>部门</label><input type="text" data-key="department" value="${esc(data.department)}"></div>
       <div class="field"><label>职位</label><input type="text" data-key="position" value="${esc(data.position)}"></div>
     </div>
     <div class="field-row">
@@ -297,7 +298,7 @@ function collectFormData() {
       emergencyPhone: getVal('basic-emergencyPhone')
     },
     education: collectEntries('education-list', ['school', 'major', 'degree', 'duration', 'isRegular', 'gpa', 'startDate', 'endDate', 'description', 'awards', 'publications']),
-    work: collectEntries('work-list', ['company', 'position', 'type', 'city', 'startDate', 'endDate', 'description']),
+    work: collectEntries('work-list', ['company', 'department', 'position', 'type', 'city', 'startDate', 'endDate', 'description']),
     projects: collectEntries('project-list', ['projectName', 'role', 'techStack', 'startDate', 'endDate', 'description']),
     languages: getVal('languages'),
     certificates: getVal('certificates'),

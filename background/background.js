@@ -279,6 +279,7 @@ async function handleParsePDF(pdfText) {
   "work": [
     {
       "company": "公司名",
+      "department": "部门",
       "position": "职位",
       "type": "工作类型(全职/实习/兼职)",
       "city": "工作城市",

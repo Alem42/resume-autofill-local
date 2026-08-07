@@ -216,6 +216,10 @@ header h1 {
   gap: 10px;
 }
 
+.field-row-3 {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
 /* 多条记录（教育/工作经历） */
 .entry-card {
   background: #fafbfc;
