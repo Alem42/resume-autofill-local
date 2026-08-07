@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>简历表单测试页面（添加区块）</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
+      max-width: 800px;
+      margin: 40px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .bili-resume-card {
+      background: #fff;
+      border: 1px solid #e8e8e8;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+    .bili-form-card-header {
+      font-size: 18px;
+      font-weight: 600;
+      color: #1677ff;
+      padding: 16px 20px 0;
+    }
+    .bili-form-card-body {
+      padding: 12px 20px 20px;
+    }
+    .bili-form-flex {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .bili-form-flex label {
+      flex: 0 0 100px;
+      font-weight: 500;
+      color: #333;
+    }
+    .bili-form-flex input,
+    .bili-form-flex select,
+    .bili-form-flex textarea {
+      flex: 1;
+      padding: 8px 10px;
+      border: 1px solid #d9d9d9;
+      border-radius: 6px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    .bili-form-multiple {
+      border: 1px solid #e8edf4;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      background: #fafbfc;
+      position: relative;
+    }
+    .bili-form-multiple-tag {
+      position: absolute;
+      top: -10px;
+      left: 12px;
+      background: #1677ff;
+      color: #fff;
+      font-size: 11px;
+      border-radius: 4px;
+      padding: 2px 8px;
+    }
+    .bili-form-add {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 10px;
+      border: 1px dashed #8ab6ff;
+      border-radius: 8px;
+      color: #1677ff;
+      font-size: 14px;
+      cursor: pointer;
+      background: rgba(22, 119, 255, 0.03);
+    }
+    .bili-form-add:hover {
+      background: rgba(22, 119, 255, 0.08);
+    }
+    .bili-icon {
+      width: 16px;
+      height: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📝 简历信息表单（添加区块测试）</h1>
+
+    <!-- 基本信息：固定表单 -->
+    <section class="bili-resume-card" id="resume基本信息">
+      <header class="bili-form-card-header">基本信息</header>
+      <div class="bili-form-card-body">
+        <form class="ant-form ant-form-horizontal">
+          <div class="bili-form-flex ant-row ant-form-item">
+            <label class="ant-form-item-required">姓名</label>
+            <input type="text" name="name" placeholder="请输入姓名" class="ant-input">
+          </div>
+          <div class="bili-form-flex ant-row ant-form-item">
+            <label class="ant-form-item-required">手机</label>
+            <input type="tel" name="phone" placeholder="请输入手机号" class="ant-input">
+          </div>
+          <div class="bili-form-flex ant-row ant-form-item">
+            <label>邮箱</label>
+            <input type="email" name="email" placeholder="请输入邮箱" class="ant-input">
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- 教育经历：初始为空，仅"添加"按钮 -->
+    <section class="bili-resume-card" id="resume教育经历">
+      <header class="bili-form-card-header">教育经历</header>
+      <div class="bili-form-card-body">
+        <form class="ant-form ant-form-horizontal">
+          <div id="edu-list"></div>
+          <div class="bili-form-add" onclick="addBlock('edu-list', EDU_TEMPLATE)"><svg class="bili-icon"><path d="M8 3v10M3 8h10"/></svg><span>&nbsp;添加教育经历</span></div>
+        </form>
+      </div>
+    </section>
+
+    <!-- 实习/工作经历：初始为空，仅"添加"按钮 -->
+    <section class="bili-resume-card" id="resume实习/工作经历">
+      <header class="bili-form-card-header">实习/工作经历</header>
+      <div class="bili-form-card-body">
+        <form class="ant-form ant-form-horizontal">
+          <div id="work-list"></div>
+          <div class="bili-form-add" onclick="addBlock('work-list', WORK_TEMPLATE)"><svg class="bili-icon"><path d="M8 3v10M3 8h10"/></svg><span>&nbsp;添加实习/工作经历</span></div>
+        </form>
+      </div>
+    </section>
+
+    <!-- 项目经历：初始为空，仅"添加"按钮 -->
+    <section class="bili-resume-card" id="resume项目经历">
+      <header class="bili-form-card-header">项目经历</header>
+      <div class="bili-form-card-body">
+        <form class="ant-form ant-form-horizontal">
+          <div id="project-list"></div>
+          <div class="bili-form-add" onclick="addBlock('project-list', PROJECT_TEMPLATE)"><svg class="bili-icon"><path d="M8 3v10M3 8h10"/></svg><span>&nbsp;添加项目经历</span></div>
+        </form>
+      </div>
+    </section>
+
+    <!-- 语言能力：初始为空，仅"添加"按钮 -->
+    <section class="bili-resume-card" id="resume语言能力">
+      <header class="bili-form-card-header">语言能力</header>
+      <div class="bili-form-card-body">
+        <form class="ant-form ant-form-horizontal">
+          <div id="language-list"></div>
+          <div class="bili-form-add" onclick="addBlock('language-list', LANGUAGE_TEMPLATE)"><svg class="bili-icon"><path d="M8 3v10M3 8h10"/></svg><span>&nbsp;添加语言能力</span></div>
+        </form>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    // 参照 B 站真实结构：点击"添加"后插入 .bili-form-multiple 字段块（同步渲染）
+    const EDU_TEMPLATE = `
+      <div class="bili-form-flex ant-row ant-form-item"><label>学校名称</label><input type="text" name="school" placeholder="请输入学校名称" class="ant-input"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>专业</label><input type="text" name="major" placeholder="请输入专业" class="ant-input"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>学历</label><select name="degree"><option value="">请选择学历</option><option value="本科">本科</option><option value="硕士">硕士</option></select></div>`;
+
+    const WORK_TEMPLATE = `
+      <div class="bili-form-flex ant-row ant-form-item"><label>公司名称</label><input type="text" name="company" placeholder="请输入公司名称" class="ant-input"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>职位名称</label><input type="text" name="position" placeholder="请输入职位名称" class="ant-input"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>工作描述</label><textarea name="work_desc" placeholder="请输入工作描述" class="ant-input"></textarea></div>`;
+
+    const PROJECT_TEMPLATE = `
+      <div class="bili-form-flex ant-row ant-form-item"><label>项目名称</label><input type="text" name="project_name" placeholder="请输入项目名称" class="ant-input"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>项目角色</label><input type="text" name="project_role" placeholder="请输入项目角色" class="ant-input"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>项目描述</label><textarea name="project_desc" placeholder="请输入项目描述" class="ant-input"></textarea></div>`;
+
+    const LANGUAGE_TEMPLATE = `
+      <div class="bili-form-flex ant-row ant-form-item"><label>语言类型</label><input type="text" name="language" placeholder="请输入语言" class="ant-input"></div>`;
+
+    let blockSeq = 0;
+    function addBlock(listId, template) {
+      blockSeq++;
+      const list = document.getElementById(listId);
+      const div = document.createElement('div');
+      div.className = 'bili-form-multiple';
+      div.innerHTML = `<div class="bili-form-multiple-tag"> ${String(blockSeq).padStart(2, '0')} </div>` + template;
+      list.appendChild(div);
+    }
+  </script>
+</body>
+</html>

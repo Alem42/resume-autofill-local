@@ -65,8 +65,13 @@
     }
 
     try {
-      // 阶段 1：采集表单字段
+      // 阶段 1：读取简历数据（本地读取，很快）
+      updateButtonText(btn, '读取简历中...', 'loading');
+      const profile = await getProfile();
+
+      // 阶段 2：展开初始为空的"添加"区块 + 采集表单字段
       updateButtonText(btn, '采集字段中...', 'loading');
+      await expandAddBlocks(profile);
       const fields = collectFields();
 
       if (fields.length === 0) {
@@ -74,10 +79,6 @@
         setTimeout(() => updateButtonText(btn, '自动填充', ''), 2000);
         return;
       }
-
-      // 阶段 2：读取简历数据
-      updateButtonText(btn, '读取简历中...', 'loading');
-      const profile = await getProfile();
 
       // 阶段 3：AI 识别（网络慢时显示已等待秒数，缓解等待焦虑）
       updateButtonText(btn, '识别中...', 'loading');
@@ -284,6 +285,87 @@
     return [];
   }
 
+  // ===== 展开"添加"区块（工作/教育/项目等初始为空时） =====
+  // 添加控件可能是裸 div（如 B 站的 .bili-form-add），必须用 [class*="add"] 兜底
+  const ADD_WORDS = /添加|新增|增加|add|append|insert|\+/i;
+  const SECTION_WORDS = /教育|工作|实习|项目|经历|语言|学校|公司/;
+
+  function findAddButtons(max) {
+    const candidates = document.querySelectorAll('button, [role="button"], a, [class*="add"], [class*="plus"]');
+    const result = [];
+    for (const el of candidates) {
+      const text = (el.textContent || '').trim();
+      const aria = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '');
+      const combo = text + ' ' + aria;
+      if (!ADD_WORDS.test(combo)) continue;
+      // 区块词：按钮文本本身，或（长度受限的）父元素文本，避免误匹配大容器
+      let ctx = combo;
+      if (!SECTION_WORDS.test(ctx)) {
+        const parentText = (el.parentElement ? el.parentElement.textContent : '') || '';
+        if (parentText.length < 50) ctx += ' ' + parentText;
+      }
+      if (!SECTION_WORDS.test(ctx)) continue;
+      if (!isVisible(el)) continue;    // 布局读取放到最后，只对已命中的少数候选执行
+      result.push(el);
+      if (max && result.length >= max) break;
+    }
+    return result;
+  }
+
+  // 最近"像区块"的祖先（真实页命中 .bili-form-card-body 的 card）
+  function getSectionContainer(btn) {
+    let el = btn.parentElement;
+    for (let i = 0; i < 5 && el && el !== document.body; i++, el = el.parentElement) {
+      const cls = (typeof el.className === 'string') ? el.className : '';
+      if (/section|block|card|item|group/.test(cls)) return el;
+      const text = (el.textContent || '');
+      if (text.length < 200 && /教育经历|工作经历|项目经历|实习经历|语言能力|求职意向|自我描述/.test(text)) return el;
+    }
+    return btn.parentElement || btn;
+  }
+
+  // 区块内是否已有可见可填字段（有 → 不重复新建空块）
+  function sectionHasVisibleFields(section) {
+    const els = section.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="password"]), select, textarea');
+    for (const el of els) {
+      if (isVisible(el)) return true;
+    }
+    return false;
+  }
+
+  // 添加按钮 → 简历区块类型；只给简历里确实有数据的区块点"添加"
+  function mapButtonToProfileKey(btn) {
+    const text = (btn.textContent || '') + ' ' + (btn.getAttribute('aria-label') || '');
+    if (/教育/.test(text)) return 'education';
+    if (/工作|实习/.test(text)) return 'work';
+    if (/项目/.test(text)) return 'projects';
+    if (/语言/.test(text)) return 'languages';
+    return null;
+  }
+
+  async function expandAddBlocks(profile) {
+    const clicked = new WeakSet();
+    let any = false;
+    for (const btn of findAddButtons()) {
+      const section = getSectionContainer(btn);
+      if (clicked.has(section)) continue;          // 同一区块只点一次
+      const key = mapButtonToProfileKey(btn);
+      if (!key || !(profile[key] && profile[key].length)) continue; // 简历无此区块数据 → 不点
+      if (sectionHasVisibleFields(section)) continue;               // 已有块 → 不重复
+      clicked.add(section);
+      btn.click();                                  // Vue 等框架同步渲染新块
+      any = true;
+      await sleep(80);
+    }
+    if (!any) return;
+    // 等待新字段渲染（异步框架可能延迟），最多 ~3s
+    const before = scanFieldElements().length;
+    for (let i = 0; i < 30; i++) {
+      await sleep(100);
+      if (scanFieldElements().length > before) return;
+    }
+  }
+
   // ===== 简历页面检测（按需显示按钮） =====
   const RESUME_STRONG = [
     // 中文：简历/求职特有
@@ -347,7 +429,9 @@
     const pageNeg = keywordHitCount(pageText, NEGATIVE_KEYWORDS);
 
     const usable = collectFieldsForDetection().filter(d => !d.isSearchLike);
-    if (usable.length === 0) return false;
+    // 全是"添加"按钮的空表单（如初始为空的 B 站简历页）也是简历表单
+    const addSignal = findAddButtons(1).length > 0;
+    if (usable.length === 0 && !addSignal) return false;
 
     let fStrong = 0, fMedium = 0, fNeg = 0;
     for (const d of usable) {
@@ -358,12 +442,12 @@
     }
 
     // 纯登录/搜索/评论页：即使有"邮箱/姓名"等中等信号也拦掉；
-    // 但字段丰富的表单（中等信号≥3，如校园招聘的"register"登记页）应放行
-    if ((pageNeg > 0 || fNeg > 0) && urlStrong === 0 && fStrong === 0 && fMedium < 3) return false;
+    // 但字段丰富的表单（中等信号≥3，如校园招聘的"register"登记页）或有"添加"区块应放行
+    if ((pageNeg > 0 || fNeg > 0) && urlStrong === 0 && fStrong === 0 && fMedium < 3 && !addSignal) return false;
 
     // 主规则：字段信号足够（强≥1 或 中等≥2）；
     // 或 URL 是招聘页（job/apply/简历…）且字段至少有一个个人信息信号，避免职业博客正文页误显示
-    return fStrong >= 1 || fMedium >= 2 || (urlStrong >= 1 && (fStrong >= 1 || fMedium >= 1));
+    return addSignal || fStrong >= 1 || fMedium >= 2 || (urlStrong >= 1 && (fStrong >= 1 || fMedium >= 1));
   }
 
   // ===== 通用标签检测 =====
