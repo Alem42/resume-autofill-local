@@ -157,7 +157,15 @@
     // 2. 原生元素优先
     if (tag === 'select') return 'native-select';
     if (tag === 'textarea') return 'native-input';
-    if (tag === 'input') return 'native-input';
+    if (tag === 'input') {
+      // 只读输入框多为自定义下拉/级联/日期组件的展示层：原生 setter 填值不会触发框架更新，
+      // 必须走组件交互。先判日期（如 B 站 bili-date），再判下拉。
+      if (el.readOnly) {
+        if (hasDatepickerBehavior(el)) return 'custom-datepicker';
+        if (hasDropdownBehavior(el) || el.closest('[class*="select"], [class*="cascader"], [class*="picker"], [class*="dropdown"], [role="combobox"]')) return 'custom-dropdown';
+      }
+      return 'native-input';
+    }
 
     // 3. 通用下拉框检测（不依赖框架名）
     if (hasDropdownBehavior(el)) return 'custom-dropdown';
@@ -229,6 +237,9 @@
       // 如果内部的原生 input 已采集，跳过外层容器
       const innerInput = el.querySelector('input:not([type="hidden"]):not([type="submit"])');
       if (innerInput && seen.has(innerInput)) return;
+      // 嵌套在更大下拉容器内的内部零件（ant 的箭头/图标/选区等），只保留最外层容器，
+      // 避免 AI 把值映射到 .ant-select-arrow / .ant-select-arrow-icon 这类装饰元素上
+      if (el.parentElement && el.parentElement.closest(customSelectors.join(','))) return;
       push(el);
     });
 
@@ -532,14 +543,17 @@
       const text = clone.textContent.trim();
       if (text) return text;
     }
-    // 通用：form-item / form-group 中的 label
-    const formItem = el.closest('[class*="form-item"], [class*="form-group"], [class*="field-item"], [class*="form-row"]');
-    if (formItem) {
+    // 通用：form-item / form-group 中的 label。
+    // ant 的 ant-form-item-children 也会命中 [class*="form-item"] 但里面没有 label，
+    // label 在更上层的 ant-form-item，所以向上逐级找真正带 label 的那一级
+    let formItem = el.closest('[class*="form-item"], [class*="form-group"], [class*="field-item"], [class*="form-row"]');
+    while (formItem && formItem !== document.body) {
       const label = formItem.querySelector('[class*="label"], label');
       if (label) {
         const text = label.textContent.trim().replace(/[：:*：*\s?]+$/, '');
         if (text) return text;
       }
+      formItem = formItem.parentElement && formItem.parentElement.closest('[class*="form-item"], [class*="form-group"], [class*="field-item"], [class*="form-row"]');
     }
     // 通用：data-label 属性
     if (el.getAttribute('data-label')) return el.getAttribute('data-label');
@@ -709,19 +723,34 @@
   }
 
   function fillNativeSelect(el, value) {
+    const v = String(value || '').trim();
+    if (!v) return;
+    // 1) 精确匹配
     for (const opt of el.options) {
-      if (opt.textContent.trim() === value || opt.value === value) {
+      if (opt.textContent.trim() === v || opt.value === v) {
         el.value = opt.value;
         el.dispatchEvent(new Event('change', { bubbles: true }));
         return;
       }
     }
+    // 2) 包含匹配（"北京" ↔ "北京市"）
     for (const opt of el.options) {
-      if (opt.textContent.includes(value) || value.includes(opt.textContent.trim())) {
+      const t = opt.textContent.trim();
+      if (t && (t.includes(v) || v.includes(t))) {
         el.value = opt.value;
         el.dispatchEvent(new Event('change', { bubbles: true }));
         return;
       }
+    }
+    // 3) 地点模糊匹配（籍贯"湖南长沙" ↔ 选项"湖南省"，去省/市后缀取最接近）
+    let best = null, bestLen = 0;
+    for (const opt of el.options) {
+      const len = matchDropdownOption(opt.textContent, v);
+      if (len > bestLen) { bestLen = len; best = opt; }
+    }
+    if (best) {
+      el.value = best.value;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
     }
   }
 
@@ -733,43 +762,95 @@
     el.blur();
   }
 
-  // 通用下拉框填充（适用于 Ant Design / Element / Arco / 任意自定义下拉）
+  // 通用下拉框填充（Ant Design / Element / Arco / 任意自定义下拉；支持省/市级联逐级选择）
   async function fillGenericDropdown(el, value) {
-    // 1. 记录打开前已存在的选项元素（避免误点其他下拉的面板）
+    // 1. 记录打开前已可见的选项（属于其他已打开的面板），避免误点；
+    //    只排除"打开前就可见"的，隐藏后由本次打开显示的面板选项不会被误排除
     const optionSelectors = '[role="option"], [class*="option"], [class*="dropdown-item"], [class*="select-item"], [class*="menu-item"], li[class*="item"]';
-    const existingOptions = new Set(document.querySelectorAll(optionSelectors));
+    const visibleBefore = new Set(Array.from(document.querySelectorAll(optionSelectors)).filter(isVisible));
 
-    // 2. 点击打开下拉
-    const trigger = el.querySelector('[class*="selector"], [class*="input"], [class*="trigger"]') || el;
+    // 2. 点击打开下拉：类名优先（ant 是 selection、arco 是 select-view），
+    //    再用 elementFromPoint 命中中央真正可点的元素——点外层容器可能不触发内部处理器
+    let trigger = el.querySelector('[class*="selector"], [class*="selection"], [class*="select-view"], [class*="input"], [class*="trigger"]') || centerOf(el) || el;
+    if (!trigger || typeof trigger.click !== 'function') trigger = el;   // SVG/非标准元素没有 click → 退回外层
     trigger.click();
     await sleep(350);
 
-    // 3. 如果有搜索框，输入搜索
+    // 3. 搜索框：仅地点类值（含 省/市 等区划词）才用，且只搜第一段，避免整值搜空把选项过滤掉
     const searchInput = el.querySelector('input[class*="search"], input[class*="filter"]') ||
                         el.querySelector('input:not([type="hidden"]):not([readonly])');
-    if (searchInput && searchInput.offsetParent !== null) {
+    if (searchInput && searchInput.offsetParent !== null && /(省|市|自治区|特别行政区|自治州|地区|盟|县|区)/.test(String(value || ''))) {
+      const searchText = placeFirstSegment(value);
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-      if (setter) setter.call(searchInput, value); else searchInput.value = value;
+      if (setter) setter.call(searchInput, searchText); else searchInput.value = searchText;
       searchInput.dispatchEvent(new Event('input', { bubbles: true }));
       searchInput.dispatchEvent(new Event('change', { bubbles: true }));
       await sleep(350);
     }
 
-    // 4. 只在新出现的选项中查找（排除打开前已存在的）
-    const allOptions = document.querySelectorAll(optionSelectors);
-    for (const opt of allOptions) {
-      if (existingOptions.has(opt)) continue; // 跳过旧面板的选项
-      if (!isVisible(opt)) continue;
-      const text = opt.textContent.trim();
-      if (text === value || text.includes(value) || value.includes(text)) {
-        opt.click();
-        await sleep(100);
-        return;
+    // 4. 逐级匹配：整值/片段精确优先，省→市逐级消费（级联选择器）；最多 6 级防死循环
+    let remaining = String(value || '').trim();
+    let clickedAny = false;
+    for (let guard = 0; guard < 6 && remaining; guard++) {
+      const opts = Array.from(document.querySelectorAll(optionSelectors))
+        .filter(o => !visibleBefore.has(o))
+        .filter(isVisible);
+      if (opts.length === 0) break;
+
+      let best = null, bestLen = 0;
+      for (const o of opts) {
+        const len = matchDropdownOption(o.textContent, remaining);
+        if (len > bestLen) { bestLen = len; best = o; }
       }
+      if (!best || bestLen === 0) break;        // 本级无可匹配项
+
+      best.click();
+      clickedAny = true;
+      await sleep(150);
+
+      if (bestLen >= remaining.length) break;   // 值已全部选中
+      // 消费本级后，跳过残留的区划后缀/分隔符："湖南省长沙市" 消费"湖南"后剩"省长沙市" → 清成"长沙市"
+      remaining = remaining.slice(bestLen).replace(/^[省市自治州盟县区\/、\s，,]+/, '');
+      await sleep(200);                         // 等下一级渲染
     }
 
-    // 未找到匹配项，关闭下拉
+    // 收尾：主动收起面板。选中后部分下拉/级联不会自动关闭（尤其只选"省"时级联停在市列表）；
+    // ant 等框架靠 document 上的 mousedown / Escape 关闭弹层，所以三种机制都发一遍兜底
+    if (clickedAny) await sleep(120);   // 等框架处理完选中事件
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
     document.body.click();
+  }
+
+  // 地点类值只取"省"段用于搜索（"湖南长沙"/"湖南省" → "湖南"），其余值原样返回
+  function placeFirstSegment(value) {
+    const v = String(value || '').trim();
+    if (v && /(省|市|自治区|特别行政区|自治州|地区|盟|县|区)/.test(v)) {
+      const seg = v.split(/(?:省|市|自治区|特别行政区|自治州|地区|盟|县|区)/)[0];
+      if (seg) return seg;
+    }
+    return v;
+  }
+
+  // 选项文本与待消费值的匹配：返回本次可消费的字符数，0 表示不匹配。
+  // "湖南省"↔"湖南"、"长沙市"↔"长沙"、"湖南长沙" 先消费 "湖南省" 的 "湖南"
+  function matchDropdownOption(optText, remaining) {
+    const t = (optText || '').trim();
+    if (!t || !remaining) return 0;
+    if (t === remaining) return remaining.length;
+    const base = t.replace(/(自治区|特别行政区|自治州|省|市|地区|盟|县|区)$/, '');
+    if (base && base === remaining) return remaining.length;
+    if (remaining.startsWith(base)) return base.length;
+    if (base.startsWith(remaining)) return remaining.length;
+    return 0;
+  }
+
+  // 取元素中心的真实可点元素（部分框架的点击处理器在内部子元素上，点外层容器不生效）
+  function centerOf(el) {
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return null;
+    const t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return t && (t === el || el.contains(t)) ? t : null;
   }
 
   // 通用日期选择器填充
