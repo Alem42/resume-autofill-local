@@ -7,11 +7,17 @@
   if (document.getElementById('resume-autofill-btn')) return;
 
   let filledFields = [];
+  let running = false;               // 重入保护：填充/撤回异步期间忽略重复点击
 
   // 获取字段当前值
   function getFieldValue(el) {
     if (el.isContentEditable) return el.textContent || '';
-    if (el.tagName.toLowerCase() === 'select') return el.selectedIndex >= 0 ? el.selectedIndex : 0;
+    // select 返回选中项文本（与 fillNativeSelect 的匹配依据一致），
+    // 而非 selectedIndex——撤回时数字既匹配不上 opt.value 也没有 .includes
+    if (el.tagName.toLowerCase() === 'select') {
+      const opt = el.options[el.selectedIndex >= 0 ? el.selectedIndex : 0];
+      return opt ? (opt.textContent.trim() || opt.value) : '';
+    }
     return el.value || '';
   }
 
@@ -56,15 +62,17 @@
 
   // ===== 点击处理 =====
   async function handleClick() {
+    if (running) return;             // 上一轮尚未结束 → 忽略本次点击
+    running = true;
     const btn = document.getElementById('resume-autofill-btn');
     let ticker = null;
 
-    if (btn.classList.contains('result')) {
-      await undoFill(btn);
-      return;
-    }
-
     try {
+      if (btn.classList.contains('result')) {
+        await undoFill(btn);
+        return;
+      }
+
       // 阶段 1：读取简历数据（本地读取，很快）
       updateButtonText(btn, '读取简历中...', 'loading');
       const profile = await getProfile();
@@ -122,13 +130,19 @@
       const count = await executeFill(mappings, (done, total) => {
         updateButtonText(btn, `填充中 ${done}/${total}`, 'loading');
       });
-      updateButtonText(btn, `已填充 ${count}/${fields.length} 个字段（点击撤回）`, 'result');
+      if (count === 0) {
+        updateButtonText(btn, '未匹配到可填充字段', 'error');
+        setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
+      } else {
+        updateButtonText(btn, `已填充 ${count}/${fields.length} 个字段（点击撤回）`, 'result');
+      }
     } catch (err) {
       updateButtonText(btn, '出错了', 'error');
       console.error('[简历填充]', err);
       setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
     } finally {
       if (ticker) clearInterval(ticker);
+      running = false;
     }
   }
 

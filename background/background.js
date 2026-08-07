@@ -170,11 +170,11 @@ async function callLLM(systemPrompt, userPrompt) {
 
       if (!response.ok) {
         const errText = await response.text();
-        // 4xx 客户端错误不重试（认证失败、参数错误等）
-        if (response.status >= 400 && response.status < 500) {
+        // 4xx 客户端错误不重试（认证失败、参数错误等）；429 限流除外，可退避重试
+        if (response.status >= 400 && response.status < 500 && response.status !== 429) {
           throw new Error(`API 返回 ${response.status}: ${errText.slice(0, 150)}`);
         }
-        // 5xx 服务端错误可重试
+        // 5xx 服务端错误 / 429 限流可重试
         throw new Error(`API 返回 ${response.status}`);
       }
 
@@ -225,11 +225,11 @@ async function callLLM(systemPrompt, userPrompt) {
         continue;
       }
 
-      // 服务端错误 (5xx) 可重试
-      if (err.message.includes('API 返回 5')) {
-        console.warn(`[简历填充] 第 ${attempt} 次服务端错误: ${err.message}`);
+      // 服务端错误 (5xx) / 限流 (429) 可重试
+      if (err.message.includes('API 返回 5') || err.message.includes('API 返回 429')) {
+        console.warn(`[简历填充] 第 ${attempt} 次服务端错误/限流: ${err.message}`);
         if (attempt === MAX_RETRIES) {
-          throw new Error(`服务端错误，已重试 ${MAX_RETRIES} 次: ${err.message}`);
+          throw new Error(`服务端错误/限流，已重试 ${MAX_RETRIES} 次: ${err.message}`);
         }
         // 等待后重试（指数退避）
         await new Promise(r => setTimeout(r, 1000 * attempt));
