@@ -137,6 +137,9 @@ async function callLLM(systemPrompt, userPrompt) {
   const url = config.baseUrl.replace(/\/$/, '') + '/chat/completions';
   const TIMEOUT_MS = 30000; // 30秒超时
   const MAX_RETRIES = 3;
+  // 不设 max_tokens：推理模型（r1/o1/reason/think）思考链会占满输出上限导致正文为空；
+  // 之前不设上限是能正常出结果的。推理模型也不传 temperature（多数推理接口不支持）
+  const isReasoning = /r1|o1|reason|think|thinking/i.test(config.model || '');
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     console.log(`[简历填充] 第 ${attempt}/${MAX_RETRIES} 次请求`);
@@ -145,21 +148,21 @@ async function callLLM(systemPrompt, userPrompt) {
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
     try {
+      const requestBody = {
+        model: config.model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ]
+      };
+      if (!isReasoning) requestBody.temperature = 0.1;
       const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${config.apiKey}`
         },
-        body: JSON.stringify({
-          model: config.model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          temperature: 0.1,
-          max_tokens: 4096 // 限制最大输出，避免模型冗长输出拖慢识别
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal
       });
 
@@ -186,7 +189,20 @@ async function callLLM(systemPrompt, userPrompt) {
       if (!data.choices || !data.choices[0]) {
         throw new Error(`API 响应格式异常，缺少 choices 字段`);
       }
-      return data.choices[0].message.content;
+      const choice = data.choices[0];
+      let content = choice.message && choice.message.content;
+      // 兼容 content 为内容分片数组的格式
+      if (Array.isArray(content)) {
+        content = content.map(p => (p && typeof p === 'object' && p.text != null ? String(p.text) : '')).join('').trim();
+      }
+      const finishReason = choice.finish_reason || 'unknown';
+      // 空内容：多为推理模型思考耗尽输出，或被内容过滤拦截
+      if (content == null || String(content).trim() === '') {
+        console.warn(`[简历填充] 模型返回空内容，finish_reason: ${finishReason}`);
+        throw new Error(`模型返回内容为空（finish_reason: ${finishReason}），请检查模型配置或重试`);
+      }
+      console.log(`[简历填充] 模型响应: finish_reason=${finishReason}, 内容 ${String(content).length} 字符`);
+      return String(content);
 
     } catch (err) {
       clearTimeout(timer);
