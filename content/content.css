@@ -13,8 +13,9 @@
   font-weight: 500;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(22, 119, 255, 0.35);
+  box-shadow: 0 4px 14px rgba(22, 119, 255, 0.35);
   transition: all 0.2s ease;
+  animation: resume-btn-in 0.3s ease;
   user-select: none;
   white-space: nowrap;
 }
@@ -22,6 +23,17 @@
 #resume-autofill-btn:hover {
   transform: translateY(-2px);
   box-shadow: 0 6px 20px rgba(22, 119, 255, 0.5);
+}
+
+@keyframes resume-btn-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 #resume-autofill-btn:active {
