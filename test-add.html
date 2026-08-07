@@ -187,6 +187,15 @@
       div.innerHTML = `<div class="bili-form-multiple-tag"> ${String(blockSeq).padStart(2, '0')} </div>` + template;
       list.appendChild(div);
     }
+
+    // ?seed 开启：预置 1 条工作经历，模拟「页面已有部分块」的增量补齐场景；
+    // 默认不开启，保持各区块初始为空（原有测试流程不变）
+    if (location.search.includes('seed')) {
+      addBlock('work-list', WORK_TEMPLATE);
+      const seed = document.querySelector('#work-list .bili-form-multiple');
+      const company = seed && seed.querySelector('input[name="company"]');
+      if (company) company.value = '已填写的公司';
+    }
   </script>
 </body>
 </html>

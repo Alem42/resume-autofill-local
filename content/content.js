@@ -324,13 +324,60 @@
     return btn.parentElement || btn;
   }
 
-  // 区块内是否已有可见可填字段（有 → 不重复新建空块）
-  function sectionHasVisibleFields(section) {
-    const els = section.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="password"]), select, textarea');
-    for (const el of els) {
-      if (isVisible(el)) return true;
+  // 简历某区块应有的条目数（数组取 length；语言等换行字符串按行计数）
+  function profileEntryCount(profile, key) {
+    if (!key || !profile) return 0;
+    const v = profile[key];
+    if (Array.isArray(v)) return v.length;
+    if (typeof v === 'string' && v.trim()) return v.split(/\r?\n/).map(s => s.trim()).filter(Boolean).length;
+    return 0;
+  }
+
+  // 区块内已渲染的经历块数：结构信号优先（块容器 class），标签频次兜底
+  function countBlocksInSection(section) {
+    const fields = section.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="password"]), select, textarea');
+    const visible = [];
+    for (const el of fields) if (isVisible(el)) visible.push(el);
+    if (visible.length === 0) return 0;
+
+    // 1) 结构信号：字段归到最近的"块容器"，只认含 >=2 个可见字段的容器，去重容器数即块数
+    const BLOCK_RE = /multiple|block|entry|record/i;
+    const containerCounts = new Map();
+    for (const el of visible) {
+      let a = el.parentElement;
+      for (let i = 0; i < 5 && a && a !== section && a !== document.body; i++, a = a.parentElement) {
+        const cls = (typeof a.className === 'string') ? a.className : '';
+        if (BLOCK_RE.test(cls)) {
+          containerCounts.set(a, (containerCounts.get(a) || 0) + 1);
+          break;
+        }
+      }
     }
-    return false;
+    const multiFieldBlocks = Array.from(containerCounts.values()).filter(c => c >= 2);
+    if (multiFieldBlocks.length > 0) return multiFieldBlocks.length;
+
+    // 2) 兜底：重复条目复用同一套标签 → 出现最多的标签次数 ≈ 块数
+    const freq = new Map();
+    for (const el of visible) {
+      const label = getLabelText(el);
+      if (!label) continue;
+      freq.set(label, (freq.get(label) || 0) + 1);
+    }
+    if (freq.size === 0) return 1;   // 标签不可读 → 保守认为已有 1 块
+    return Math.max(...freq.values());
+  }
+
+  // 在区块内重新查找"添加"按钮（每轮点击前重查，防框架重渲染替换节点）
+  function findAddButtonInSection(section) {
+    const candidates = section.querySelectorAll('button, [role="button"], a, [class*="add"], [class*="plus"]');
+    for (const el of candidates) {
+      const text = (el.textContent || '').trim();
+      const aria = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '');
+      if (!ADD_WORDS.test(text + ' ' + aria)) continue;
+      if (!isVisible(el)) continue;
+      return el;
+    }
+    return null;
   }
 
   // 添加按钮 → 简历区块类型；只给简历里确实有数据的区块点"添加"
@@ -348,14 +395,20 @@
     let any = false;
     for (const btn of findAddButtons()) {
       const section = getSectionContainer(btn);
-      if (clicked.has(section)) continue;          // 同一区块只点一次
+      if (clicked.has(section)) continue;          // 同一区块只处理一次
       const key = mapButtonToProfileKey(btn);
-      if (!key || !(profile[key] && profile[key].length)) continue; // 简历无此区块数据 → 不点
-      if (sectionHasVisibleFields(section)) continue;               // 已有块 → 不重复
+      const want = profileEntryCount(profile, key);               // 简历条数（数组 length / 字符串按行数）
+      if (want <= 0) continue;                                    // 简历无此区块数据 → 不点
       clicked.add(section);
-      btn.click();                                  // Vue 等框架同步渲染新块
+      const toAdd = Math.max(0, want - countBlocksInSection(section)); // 页面已有块数的差额
+      if (toAdd === 0) continue;                                  // 已有块 ≥ 简历条数 → 不重复新建
       any = true;
-      await sleep(80);
+      for (let i = 0; i < toAdd; i++) {
+        const addBtn = findAddButtonInSection(section) || btn;    // 每轮重查，防重渲染替换节点
+        if (!addBtn || !addBtn.isConnected || !isVisible(addBtn)) break;
+        addBtn.click();                                           // Vue 等框架同步渲染新块
+        await sleep(80);
+      }
     }
     if (!any) return;
     // 等待新字段渲染（异步框架可能延迟），最多 ~3s
