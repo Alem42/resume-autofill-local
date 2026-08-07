@@ -1,0 +1,567 @@
+// Content Script - 通用字段采集 + 智能填充 + 浮动按钮
+// 策略：行为驱动检测，不依赖特定 UI 框架类名
+
+(function () {
+  'use strict';
+
+  if (document.getElementById('resume-autofill-btn')) return;
+
+  let filledFields = [];
+
+  // 获取字段当前值
+  function getFieldValue(el) {
+    if (el.isContentEditable) return el.textContent || '';
+    if (el.tagName.toLowerCase() === 'select') return el.selectedIndex >= 0 ? el.selectedIndex : 0;
+    return el.value || '';
+  }
+
+  // ===== 浮动按钮（可拖拽） =====
+  function createFloatingButton() {
+    const btn = document.createElement('div');
+    btn.id = 'resume-autofill-btn';
+    btn.textContent = '自动填充';
+    document.body.appendChild(btn);
+
+    let isDragging = false, startX, startY, startLeft, startTop, hasMoved;
+
+    btn.addEventListener('mousedown', (e) => {
+      isDragging = true; hasMoved = false;
+      startX = e.clientX; startY = e.clientY;
+      const rect = btn.getBoundingClientRect();
+      startLeft = rect.left; startTop = rect.top;
+      btn.style.transition = 'none';
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const dx = e.clientX - startX, dy = e.clientY - startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) hasMoved = true;
+      btn.style.right = 'auto'; btn.style.bottom = 'auto';
+      btn.style.left = (startLeft + dx) + 'px';
+      btn.style.top = (startTop + dy) + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+      if (isDragging && !hasMoved) handleClick();
+      isDragging = false;
+      btn.style.transition = 'all 0.2s ease';
+    });
+
+    return btn;
+  }
+
+  function updateButtonText(btn, text, className) {
+    btn.textContent = text;
+    btn.className = className || '';
+  }
+
+  // ===== 点击处理 =====
+  async function handleClick() {
+    const btn = document.getElementById('resume-autofill-btn');
+
+    if (btn.classList.contains('result')) {
+      updateButtonText(btn, '撤回中...', 'loading');
+      await undoFill();
+      return;
+    }
+
+    updateButtonText(btn, '识别中...', 'loading');
+
+    try {
+      const fields = collectFields();
+
+      if (fields.length === 0) {
+        updateButtonText(btn, '未找到表单', 'error');
+        setTimeout(() => updateButtonText(btn, '自动填充', ''), 2000);
+        return;
+      }
+
+      const profile = await getProfile();
+
+      chrome.runtime.sendMessage({
+        type: 'FILL_FORM', fields, profile
+      }, response => {
+        if (chrome.runtime.lastError) {
+          updateButtonText(btn, '通信失败', 'error');
+          console.error('[简历填充]', chrome.runtime.lastError.message);
+          setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
+          return;
+        }
+        if (!response) {
+          updateButtonText(btn, '无响应', 'error');
+          setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
+          return;
+        }
+        if (response.error) {
+          const errText = response.error.length > 30 ? response.error.slice(0, 28) + '...' : response.error;
+          updateButtonText(btn, errText, 'error');
+          console.error('[简历填充]', response.error);
+          setTimeout(() => updateButtonText(btn, '自动填充', ''), 5000);
+          return;
+        }
+
+        executeFill(response.mappings || []).then(count => {
+          updateButtonText(btn, `已填充 ${count}/${fields.length} 个字段（点击撤回）`, 'result');
+        });
+      });
+    } catch (err) {
+      updateButtonText(btn, '出错了', 'error');
+      console.error('[简历填充]', err);
+      setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
+    }
+  }
+
+  // ===== 通用组件类型检测（行为驱动） =====
+  function detectComponentType(el) {
+    const tag = el.tagName.toLowerCase();
+
+    // 1. contenteditable 元素
+    if (el.isContentEditable && tag !== 'input' && tag !== 'textarea') return 'contenteditable';
+    if (el.getAttribute('role') === 'textbox') return 'contenteditable';
+
+    // 2. 原生元素优先
+    if (tag === 'select') return 'native-select';
+    if (tag === 'textarea') return 'native-input';
+    if (tag === 'input') return 'native-input';
+
+    // 3. 通用下拉框检测（不依赖框架名）
+    if (hasDropdownBehavior(el)) return 'custom-dropdown';
+
+    // 4. 日期选择器检测
+    if (hasDatepickerBehavior(el)) return 'custom-datepicker';
+
+    // 5. 内含 input 的容器（通用自定义输入框）
+    const innerInput = el.querySelector('input:not([type="hidden"]):not([type="submit"]):not([type="button"])');
+    if (innerInput) return 'wrapper-input';
+
+    return 'unknown';
+  }
+
+  // 通用下拉行为检测
+  function hasDropdownBehavior(el) {
+    // ARIA 语义
+    if (el.getAttribute('aria-haspopup') === 'listbox' ||
+        el.getAttribute('aria-haspopup') === 'dialog' ||
+        el.getAttribute('role') === 'combobox') return true;
+    // 类名中的通用模式（匹配任何框架）
+    const cls = (typeof el.className === 'string') ? el.className : '';
+    if (/\b(select|dropdown|combo|picker|cascader)\b/i.test(cls) && el.tagName.toLowerCase() !== 'select') return true;
+    // 有展开状态的元素
+    if (el.getAttribute('aria-expanded') !== null) return true;
+    return false;
+  }
+
+  // 通用日期选择器行为检测
+  function hasDatepickerBehavior(el) {
+    const cls = (typeof el.className === 'string') ? el.className : '';
+    if (/\b(date|calendar|日历|时间)\b/i.test(cls)) return true;
+    // 内含 input 且类名含 date
+    if (el.querySelector('input') && /\b(date|time)\b/i.test(cls)) return true;
+    return false;
+  }
+
+  // ===== 通用字段采集引擎（三轮扫描） =====
+  function collectFields() {
+    const fields = [];
+    const collected = new Set();
+
+    // 第一轮：原生表单元素
+    document.querySelectorAll('input, select, textarea').forEach(el => {
+      const type = (el.type || '').toLowerCase();
+      if (['hidden', 'submit', 'button', 'image', 'file', 'password', 'checkbox', 'radio'].includes(type)) return;
+      if (!isVisible(el)) return;
+      if (el.closest('#resume-autofill-btn')) return;
+      addField(el, collected, fields);
+    });
+
+    // 第二轮：自定义组件（ARIA 语义 + 类名模式 + contenteditable）
+    const customSelectors = [
+      '[role="textbox"]', '[role="combobox"]', '[role="searchbox"]', '[role="spinbutton"]',
+      '[contenteditable="true"]', '[contenteditable=""]',
+      '[aria-haspopup="listbox"]', '[aria-haspopup="dialog"]',
+      '[class*="select"]:not(select)', '[class*="dropdown"]:not([role="menu"])',
+      '[class*="combobox"]', '[class*="picker"]', '[class*="cascader"]'
+    ];
+    document.querySelectorAll(customSelectors.join(',')).forEach(el => {
+      if (!isVisible(el)) return;
+      if (el.closest('#resume-autofill-btn')) return;
+      // 如果内部的原生 input 已采集，跳过外层容器
+      const innerInput = el.querySelector('input:not([type="hidden"]):not([type="submit"])');
+      if (innerInput && collected.has(innerInput)) return;
+      addField(el, collected, fields);
+    });
+
+    // 第三轮：框架绑定的隐藏字段（Vue/React/Angular）
+    document.querySelectorAll('[data-field], [formcontrolname], [v-model], [ng-model], [formControlName]').forEach(el => {
+      if (!isVisible(el) || collected.has(el)) return;
+      addField(el, collected, fields);
+    });
+
+    return fields;
+  }
+
+  function addField(el, collected, fields) {
+    if (collected.has(el)) return;
+    collected.add(el);
+
+    const selector = generateSelector(el);
+    if (!selector) return;
+
+    const componentType = detectComponentType(el);
+    const field = {
+      selector, componentType,
+      tag: el.tagName.toLowerCase(),
+      label: getLabelText(el),
+      placeholder: getPlaceholder(el),
+      name: el.name || el.getAttribute('name') || el.getAttribute('formcontrolname') || '',
+      id: el.id || '',
+      contextText: getContextText(el),
+      required: isRequired(el)
+    };
+
+    // 采集可选项
+    if (el.tagName.toLowerCase() === 'select') {
+      field.options = Array.from(el.options).map(o => o.textContent.trim()).filter(Boolean);
+    }
+
+    // 尝试从已渲染的下拉面板采集选项
+    if (componentType === 'custom-dropdown' || componentType === 'native-select') {
+      const opts = collectDropdownOptions(el);
+      if (opts.length > 0) field.options = opts;
+    }
+
+    const hasContext = field.label || field.placeholder || field.name || field.contextText;
+    if (hasContext) fields.push(field);
+  }
+
+  // 通用可选项采集（只从与当前字段关联的下拉面板采集）
+  function collectDropdownOptions(containerEl) {
+    // 优先从容器内部采集（原生 select 或自定义组件内的选项）
+    const innerOpts = containerEl.querySelectorAll('option, [role="option"], [class*="option"]');
+    if (innerOpts.length > 0) {
+      const opts = new Set();
+      innerOpts.forEach(opt => {
+        const text = (opt.textContent || opt.value || '').trim();
+        if (text && text.length < 50) opts.add(text);
+      });
+      if (opts.size > 0) return Array.from(opts);
+    }
+    return [];
+  }
+
+  // ===== 通用标签检测 =====
+  function getLabelText(el) {
+    // label for
+    if (el.id) {
+      const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      if (label) return label.textContent.trim();
+    }
+    // 包裹的 label
+    const parentLabel = el.closest('label');
+    if (parentLabel) {
+      const clone = parentLabel.cloneNode(true);
+      clone.querySelectorAll('input, select, textarea').forEach(e => e.remove());
+      const text = clone.textContent.trim();
+      if (text) return text;
+    }
+    // 通用：form-item / form-group 中的 label
+    const formItem = el.closest('[class*="form-item"], [class*="form-group"], [class*="field-item"], [class*="form-row"]');
+    if (formItem) {
+      const label = formItem.querySelector('[class*="label"], label');
+      if (label) {
+        const text = label.textContent.trim().replace(/[：:*：*\s?]+$/, '');
+        if (text) return text;
+      }
+    }
+    // 通用：data-label 属性
+    if (el.getAttribute('data-label')) return el.getAttribute('data-label');
+    return '';
+  }
+
+  function getPlaceholder(el) {
+    if (el.placeholder) return el.placeholder;
+    // 内部 input 的 placeholder
+    const inner = el.querySelector('input[placeholder], textarea[placeholder]');
+    if (inner) return inner.placeholder;
+    // ARIA
+    if (el.getAttribute('aria-placeholder')) return el.getAttribute('aria-placeholder');
+    // 通用 placeholder 类名
+    const ph = el.querySelector('[class*="placeholder"]');
+    if (ph) return ph.textContent.trim();
+    return '';
+  }
+
+  function isRequired(el) {
+    if (el.required || el.getAttribute('aria-required') === 'true') return true;
+    const formItem = el.closest('[class*="form-item"], [class*="form-group"], [class*="field"]');
+    if (formItem) {
+      if (formItem.querySelector('[class*="required"]')) return true;
+      const label = formItem.querySelector('label, [class*="label"]');
+      if (label && /[＊*⭐]/.test(label.textContent)) return true;
+    }
+    return false;
+  }
+
+  function getContextText(el) {
+    let prev = el.previousElementSibling;
+    if (prev && !['INPUT', 'SELECT', 'TEXTAREA'].includes(prev.tagName)) {
+      const text = prev.textContent.trim();
+      if (text && text.length < 100) return text;
+    }
+    const parent = el.parentElement;
+    if (parent) {
+      const clone = parent.cloneNode(true);
+      clone.querySelectorAll('input, select, textarea, svg, style, script').forEach(e => e.remove());
+      const text = clone.textContent.trim().replace(/\s+/g, ' ');
+      if (text && text.length < 150) return text;
+    }
+    let ancestor = el.parentElement?.parentElement;
+    if (ancestor) {
+      const clone = ancestor.cloneNode(true);
+      clone.querySelectorAll('input, select, textarea, svg, style, script').forEach(e => e.remove());
+      const text = clone.textContent.trim().replace(/\s+/g, ' ');
+      if (text && text.length < 150) return text;
+    }
+    return '';
+  }
+
+  // ===== 选择器生成 =====
+  function generateSelector(el) {
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    if (el.name) return `${el.tagName.toLowerCase()}[name="${CSS.escape(el.name)}"]`;
+
+    const path = [];
+    let current = el;
+    while (current && current !== document.body) {
+      let sel = current.tagName.toLowerCase();
+      if (current.id) {
+        path.unshift(`#${CSS.escape(current.id)}`);
+        break;
+      }
+      // 用有意义的 class 辅助定位
+      if (current.className && typeof current.className === 'string') {
+        const useful = current.className.split(/\s+/).find(c =>
+          c.startsWith('ant-') || c.startsWith('el-') || c.startsWith('arco-') ||
+          c.startsWith('t-') || c.startsWith('is-') || c.startsWith('mui-')
+        );
+        if (useful) sel += `.${useful}`;
+      }
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
+        if (siblings.length > 1) sel += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+      }
+      path.unshift(sel);
+      current = current.parentElement;
+    }
+    return path.join(' > ');
+  }
+
+  // ===== 填充执行 =====
+  async function executeFill(mappings) {
+    let count = 0;
+    const undoData = [];
+
+    for (const mapping of mappings) {
+      // 防御：LLM 返回空值时跳过，避免填充空字段
+      if (mapping.value === null || mapping.value === undefined || mapping.value === '') continue;
+      const el = findElement(mapping.selector);
+      if (!el) continue;
+
+      const value = String(mapping.value);
+      const componentType = mapping.componentType || detectComponentType(el);
+
+      try {
+        const originalValue = getFieldValue(el);
+        undoData.push({ selector: mapping.selector, originalValue, componentType });
+
+        await fillByType(el, value, componentType);
+        highlightField(el);
+        count++;
+      } catch (e) {
+        console.warn('[简历填充] 填充失败:', mapping.selector, componentType, e);
+      }
+      await sleep(150);
+    }
+
+    filledFields = undoData;
+    return count;
+  }
+
+  async function fillByType(el, value, componentType) {
+    switch (componentType) {
+      case 'native-input':
+      case 'wrapper-input':
+        fillNativeInput(el, value);
+        break;
+      case 'native-select':
+        fillNativeSelect(el, value);
+        break;
+      case 'contenteditable':
+        fillContentEditable(el, value);
+        break;
+      case 'custom-dropdown':
+        await fillGenericDropdown(el, value);
+        break;
+      case 'custom-datepicker':
+        await fillGenericDatepicker(el, value);
+        break;
+      default:
+        // 兜底：尝试当原生 input 填充
+        if (el.tagName.toLowerCase() === 'input' || el.tagName.toLowerCase() === 'textarea') {
+          fillNativeInput(el, value);
+        } else {
+          // 最后尝试：找到内部 input 填充
+          const inner = el.querySelector('input:not([type="hidden"])');
+          if (inner) fillNativeInput(inner, value);
+        }
+    }
+  }
+
+  // ===== 各类型填充实现 =====
+
+  function fillNativeInput(el, value) {
+    const proto = el.tagName.toLowerCase() === 'textarea'
+      ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    if (setter) setter.call(el, value); else el.value = value;
+    el.dispatchEvent(new Event('focus', { bubbles: true }));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true }));
+  }
+
+  function fillNativeSelect(el, value) {
+    for (const opt of el.options) {
+      if (opt.textContent.trim() === value || opt.value === value) {
+        el.value = opt.value;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return;
+      }
+    }
+    for (const opt of el.options) {
+      if (opt.textContent.includes(value) || value.includes(opt.textContent.trim())) {
+        el.value = opt.value;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return;
+      }
+    }
+  }
+
+  function fillContentEditable(el, value) {
+    el.focus();
+    el.textContent = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.blur();
+  }
+
+  // 通用下拉框填充（适用于 Ant Design / Element / Arco / 任意自定义下拉）
+  async function fillGenericDropdown(el, value) {
+    // 1. 记录打开前已存在的选项元素（避免误点其他下拉的面板）
+    const optionSelectors = '[role="option"], [class*="option"], [class*="dropdown-item"], [class*="select-item"], [class*="menu-item"], li[class*="item"]';
+    const existingOptions = new Set(document.querySelectorAll(optionSelectors));
+
+    // 2. 点击打开下拉
+    const trigger = el.querySelector('[class*="selector"], [class*="input"], [class*="trigger"]') || el;
+    trigger.click();
+    await sleep(350);
+
+    // 3. 如果有搜索框，输入搜索
+    const searchInput = el.querySelector('input[class*="search"], input[class*="filter"]') ||
+                        el.querySelector('input:not([type="hidden"]):not([readonly])');
+    if (searchInput && searchInput.offsetParent !== null) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      if (setter) setter.call(searchInput, value); else searchInput.value = value;
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      searchInput.dispatchEvent(new Event('change', { bubbles: true }));
+      await sleep(350);
+    }
+
+    // 4. 只在新出现的选项中查找（排除打开前已存在的）
+    const allOptions = document.querySelectorAll(optionSelectors);
+    for (const opt of allOptions) {
+      if (existingOptions.has(opt)) continue; // 跳过旧面板的选项
+      if (!isVisible(opt)) continue;
+      const text = opt.textContent.trim();
+      if (text === value || text.includes(value) || value.includes(text)) {
+        opt.click();
+        await sleep(100);
+        return;
+      }
+    }
+
+    // 未找到匹配项，关闭下拉
+    document.body.click();
+  }
+
+  // 通用日期选择器填充
+  async function fillGenericDatepicker(el, value) {
+    const input = el.querySelector('input') || el;
+    input.click();
+    input.focus();
+    await sleep(250);
+
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (setter) setter.call(input, value); else input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await sleep(200);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+    await sleep(100);
+    document.body.click();
+  }
+
+  // ===== 高亮 =====
+  function highlightField(el) {
+    const target = el.closest('[class*="select"], [class*="input"], [class*="picker"], [class*="field"]') || el;
+    const orig = target.style.boxShadow;
+    target.style.boxShadow = '0 0 0 2px rgba(82, 196, 26, 0.5)';
+    target.style.transition = 'box-shadow 0.3s';
+    setTimeout(() => { target.style.boxShadow = orig; }, 2000);
+  }
+
+  // ===== 撤回（恢复原值） =====
+  async function undoFill() {
+    for (const { selector, originalValue, componentType } of filledFields) {
+      const el = findElement(selector);
+      if (!el) continue;
+      try { await fillByType(el, originalValue || '', componentType); } catch {}
+    }
+    filledFields = [];
+    const btn = document.getElementById('resume-autofill-btn');
+    if (btn) updateButtonText(btn, '自动填充', '');
+  }
+
+  // ===== 工具函数 =====
+  function findElement(selector) {
+    try { return document.querySelector(selector); } catch { return null; }
+  }
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+  function isVisible(el) {
+    const s = window.getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
+  function getProfile() {
+    return new Promise(resolve => {
+      chrome.storage.local.get(null, result => {
+        resolve({
+          basic: result.basic || {},
+          education: result.education || [],
+          work: result.work || [],
+          projects: result.projects || [],
+          languages: result.languages || '',
+          certificates: result.certificates || '',
+          skills: result.skills || '',
+          jobIntention: result.jobIntention || {},
+          selfEvaluation: result.selfEvaluation || ''
+        });
+      });
+    });
+  }
+
+  // ===== 初始化 =====
+  createFloatingButton();
+})();

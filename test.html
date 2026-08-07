@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>简历表单测试页面</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
+      max-width: 800px;
+      margin: 40px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #1677ff;
+      margin-bottom: 30px;
+    }
+    .form-group {
+      margin-bottom: 20px;
+    }
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 500;
+      color: #333;
+    }
+    input[type="text"],
+    input[type="email"],
+    input[type="tel"],
+    input[type="url"],
+    input[type="date"],
+    select,
+    textarea {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #d9d9d9;
+      border-radius: 6px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    input:focus,
+    select:focus,
+    textarea:focus {
+      outline: none;
+      border-color: #1677ff;
+      box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.1);
+    }
+    textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    .section-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #1677ff;
+      margin: 30px 0 20px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid #e8e8e8;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📝 简历信息表单（测试页面）</h1>
+
+    <div class="section-title">基本信息</div>
+
+    <div class="row">
+      <div class="form-group">
+        <label for="name">姓名 *</label>
+        <input type="text" id="name" name="name" placeholder="请输入真实姓名" required>
+      </div>
+      <div class="form-group">
+        <label for="gender">性别</label>
+        <select id="gender" name="gender">
+          <option value="">请选择</option>
+          <option value="男">男</option>
+          <option value="女">女</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="form-group">
+        <label for="birthday">出生日期</label>
+        <input type="date" id="birthday" name="birthday">
+      </div>
+      <div class="form-group">
+        <label for="phone">手机号码 *</label>
+        <input type="tel" id="phone" name="phone" placeholder="请输入手机号" required>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="email">电子邮箱 *</label>
+      <input type="email" id="email" name="email" placeholder="example@email.com" required>
+    </div>
+
+    <div class="row">
+      <div class="form-group">
+        <label for="city">所在城市</label>
+        <input type="text" id="city" name="city" placeholder="如：北京">
+      </div>
+      <div class="form-group">
+        <label for="address">详细地址</label>
+        <input type="text" id="address" name="address" placeholder="街道地址">
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="form-group">
+        <label for="website">个人网站/博客</label>
+        <input type="url" id="website" name="website" placeholder="https://">
+      </div>
+      <div class="form-group">
+        <label for="github">GitHub</label>
+        <input type="url" id="github" name="github" placeholder="https://github.com/username">
+      </div>
+    </div>
+
+    <div class="section-title">求职意向</div>
+
+    <div class="row">
+      <div class="form-group">
+        <label for="expected_position">期望职位</label>
+        <input type="text" id="expected_position" name="expected_position" placeholder="如：前端工程师">
+      </div>
+      <div class="form-group">
+        <label for="expected_salary">期望薪资</label>
+        <select id="expected_salary" name="expected_salary">
+          <option value="">请选择</option>
+          <option value="10K以下">10K以下</option>
+          <option value="10K-15K">10K-15K</option>
+          <option value="15K-20K">15K-20K</option>
+          <option value="20K-30K">20K-30K</option>
+          <option value="30K-50K">30K-50K</option>
+          <option value="50K以上">50K以上</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="form-group">
+        <label for="expected_city">期望工作城市</label>
+        <input type="text" id="expected_city" name="expected_city" placeholder="如：上海">
+      </div>
+      <div class="form-group">
+        <label for="job_type">工作类型</label>
+        <select id="job_type" name="job_type">
+          <option value="">请选择</option>
+          <option value="全职">全职</option>
+          <option value="兼职">兼职</option>
+          <option value="实习">实习</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="section-title">自我评价</div>
+
+    <div class="form-group">
+      <label for="self_evaluation">个人简介</label>
+      <textarea id="self_evaluation" name="self_evaluation" placeholder="简要介绍你的专业技能、工作经验和职业目标..."></textarea>
+    </div>
+
+    <div class="section-title">项目经历</div>
+
+    <div class="form-group">
+      <label for="project_name">项目名称</label>
+      <input type="text" id="project_name" name="project_name" placeholder="请输入项目名称">
+    </div>
+
+    <div class="row">
+      <div class="form-group">
+        <label for="project_role">担任角色</label>
+        <input type="text" id="project_role" name="project_role" placeholder="如：前端负责人">
+      </div>
+      <div class="form-group">
+        <label for="project_tech">技术栈</label>
+        <input type="text" id="project_tech" name="project_tech" placeholder="React, Node.js, MySQL">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="project_desc">项目描述</label>
+      <textarea id="project_desc" name="project_desc" placeholder="描述项目背景、你的职责和成果..."></textarea>
+    </div>
+
+    <div class="section-title">专业技能</div>
+
+    <div class="form-group">
+      <label for="skills">技能列表</label>
+      <textarea id="skills" name="skills" placeholder="如：JavaScript - 精通&#10;React - 熟练&#10;Python - 掌握"></textarea>
+    </div>
+  </div>
+</body>
+</html>
