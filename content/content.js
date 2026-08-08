@@ -18,6 +18,15 @@
       const opt = el.options[el.selectedIndex >= 0 ? el.selectedIndex : 0];
       return opt ? (opt.textContent.trim() || opt.value) : '';
     }
+    // 自定义下拉/级联容器：el.value 恒为空，当前值在内部输入框或选中项文本里，
+    // 撤回时要据此恢复原值
+    if (el.tagName.toLowerCase() !== 'input' && el.tagName.toLowerCase() !== 'textarea') {
+      const innerInput = el.querySelector('input:not([type="hidden"])');
+      if (innerInput && innerInput.value) return innerInput.value;
+      const selection = el.querySelector('[class*="selection-item"], [class*="selected"], [class*="value"], [class*="placeholder"]');
+      if (selection && selection.textContent.trim()) return selection.textContent.trim();
+      return '';
+    }
     return el.value || '';
   }
 
@@ -291,8 +300,12 @@
       if (opts.length > 0) field.options = opts;
     }
 
-    const hasContext = field.label || field.placeholder || field.name || field.contextText;
-    if (hasContext) fields.push(field);
+    // 弱字段过滤：只有 contextText 且无可选项的字段最弱（多为卡片标题/装饰 div 噪声），
+    // 丢弃降噪；带 options 的 contextText-only 几乎必是真下拉/单选，保留。
+    // 有 label/placeholder/name 的强信号字段一律保留。
+    const hasStrong = field.label || field.placeholder || field.name;
+    const hasOptions = field.options && field.options.length > 0;
+    if (hasStrong || (field.contextText && hasOptions)) fields.push(field);
   }
 
   // 通用可选项采集（只从与当前字段关联的下拉面板采集）
@@ -381,6 +394,9 @@
     const multiFieldBlocks = Array.from(containerCounts.values()).filter(c => c >= 2);
     if (multiFieldBlocks.length > 0) return multiFieldBlocks.length;
 
+    // 单个可见字段（如语言/技能的 textarea）：不是多块结构，按行数补块会凭空新建输入框 → 标记不可扩容
+    if (visible.length === 1) return -1;
+
     // 2) 兜底：重复条目复用同一套标签 → 出现最多的标签次数 ≈ 块数
     const freq = new Map();
     for (const el of visible) {
@@ -425,7 +441,9 @@
       const want = profileEntryCount(profile, key);               // 简历条数（数组 length / 字符串按行数）
       if (want <= 0) continue;                                    // 简历无此区块数据 → 不点
       clicked.add(section);
-      const toAdd = Math.max(0, want - countBlocksInSection(section)); // 页面已有块数的差额
+      const existing = countBlocksInSection(section);
+      if (existing < 0) continue;                                 // 单输入区块（textarea）不可扩容
+      const toAdd = Math.max(0, want - existing);                 // 页面已有块数的差额
       if (toAdd === 0) continue;                                  // 已有块 ≥ 简历条数 → 不重复新建
       any = true;
       for (let i = 0; i < toAdd; i++) {
@@ -745,10 +763,13 @@
   // ===== 各类型填充实现 =====
 
   function fillNativeInput(el, value) {
+    let v = String(value);
+    // 原生 date 输入框只接受 YYYY-MM-DD：简历常见 YYYY-MM，补 "-01" 避免被浏览器置空
+    if (el.tagName.toLowerCase() === 'input' && el.type === 'date' && /^\d{4}-\d{1,2}$/.test(v)) v += '-01';
     const proto = el.tagName.toLowerCase() === 'textarea'
       ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-    if (setter) setter.call(el, value); else el.value = value;
+    if (setter) setter.call(el, v); else el.value = v;
     el.dispatchEvent(new Event('focus', { bubbles: true }));
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -797,6 +818,16 @@
 
   // 通用下拉框填充（Ant Design / Element / Arco / 任意自定义下拉；支持省/市级联逐级选择）
   async function fillGenericDropdown(el, value) {
+    const v = String(value || '').trim();
+    // 清空场景（撤回恢复为空）：点 clear/× 按钮清空；无按钮则收面板（尽力而为）
+    if (!v) {
+      const root = el.closest('[class*="select"], [class*="cascader"], [class*="picker"]') || el;
+      const clearBtn = root.querySelector('[class*="clear"], [class*="close-icon"], [class*="remove-icon"]');
+      if (clearBtn) { clearBtn.click(); await sleep(120); }
+      await closeOpenPanel(el, root);
+      return;
+    }
+
     // 1. 记录打开前已可见的选项（属于其他已打开的面板），避免误点；
     //    只排除"打开前就可见"的，隐藏后由本次打开显示的面板选项不会被误排除
     const optionSelectors = '[role="option"], [class*="option"], [class*="dropdown-item"], [class*="select-item"], [class*="menu-item"], li[class*="item"]';
@@ -817,8 +848,8 @@
     // 3. 搜索框：仅地点类值（含 省/市 等区划词）才用，且只搜第一段，避免整值搜空把选项过滤掉
     const searchInput = el.querySelector('input[class*="search"], input[class*="filter"]') ||
                         el.querySelector('input:not([type="hidden"]):not([readonly])');
-    if (searchInput && searchInput.offsetParent !== null && /(省|市|自治区|特别行政区|自治州|地区|盟|县|区)/.test(String(value || ''))) {
-      const searchText = placeFirstSegment(value);
+    if (searchInput && searchInput.offsetParent !== null && /(省|市|自治区|特别行政区|自治州|地区|盟|县|区)/.test(v)) {
+      const searchText = placeFirstSegment(v);
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
       if (setter) setter.call(searchInput, searchText); else searchInput.value = searchText;
       searchInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -827,7 +858,7 @@
     }
 
     // 4. 逐级匹配：整值/片段精确优先，省→市逐级消费（级联选择器）；最多 6 级防死循环
-    let remaining = String(value || '').trim();
+    let remaining = v;
     let clickedAny = false;
     for (let guard = 0; guard < 6 && remaining; guard++) {
       const opts = Array.from(document.querySelectorAll(optionSelectors))
@@ -1222,7 +1253,9 @@
     teardown();
     debouncedCheck = debounce(tryShow, 1200);
     observer = new MutationObserver(onMutations);
-    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+    // 只监听子节点增删，不监听属性：React/Vue 频繁改 class/style 会触发大量属性变更，
+    // 导致非表单页面在 60 秒内反复做全页字段扫描（布局读取开销大）
+    observer.observe(document.documentElement, { childList: true, subtree: true });
     window.addEventListener('popstate', onRouteChange);
     window.addEventListener('hashchange', onRouteChange);
     // 60 秒内未识别则停止观察，避免巨型页面无限扫描

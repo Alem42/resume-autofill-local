@@ -230,6 +230,18 @@
     </div>
   </div>
 
+  <!-- PDF 解析结果确认弹窗 -->
+  <div id="pdf-confirm-modal" class="modal" style="display:none">
+    <div class="modal-content">
+      <h3>PDF 解析结果</h3>
+      <p id="pdf-confirm-text">检测到上次未完成的 PDF 解析结果，是否应用到表单？</p>
+      <div class="modal-actions">
+        <button id="pdf-confirm-confirm" class="btn-primary">应用</button>
+        <button id="pdf-confirm-cancel" class="btn-secondary">放弃</button>
+      </div>
+    </div>
+  </div>
+
   <script src="../lib/pdf.min.js"></script>
   <script src="popup.js"></script>
 </body>

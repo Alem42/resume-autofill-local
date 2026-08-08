@@ -135,11 +135,13 @@ async function callLLM(systemPrompt, userPrompt) {
   }
 
   const url = config.baseUrl.replace(/\/$/, '') + '/chat/completions';
-  const TIMEOUT_MS = 30000; // 30秒超时
-  const MAX_RETRIES = 3;
+  // 推理模型（r1/o1/reason/think）思考链长，30s 超时会误杀合法慢请求、重试还要重建思考，
+  // 反而更慢 → 长超时 + 少重试；非推理模型维持 30s/3
+  const isReasoning = /r1|o1|reason|think|thinking/i.test(config.model || '');
+  const TIMEOUT_MS = isReasoning ? 180000 : 30000;
+  const MAX_RETRIES = isReasoning ? 2 : 3;
   // 不设 max_tokens：推理模型（r1/o1/reason/think）思考链会占满输出上限导致正文为空；
   // 之前不设上限是能正常出结果的。推理模型也不传 temperature（多数推理接口不支持）
-  const isReasoning = /r1|o1|reason|think|thinking/i.test(config.model || '');
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     console.log(`[简历填充] 第 ${attempt}/${MAX_RETRIES} 次请求`);
@@ -170,12 +172,16 @@ async function callLLM(systemPrompt, userPrompt) {
 
       if (!response.ok) {
         const errText = await response.text();
+        const status = response.status;
         // 4xx 客户端错误不重试（认证失败、参数错误等）；429 限流除外，可退避重试
-        if (response.status >= 400 && response.status < 500 && response.status !== 429) {
-          throw new Error(`API 返回 ${response.status}: ${errText.slice(0, 150)}`);
+        if (status >= 400 && status < 500 && status !== 429) {
+          throw new Error(`API 返回 ${status}: ${errText.slice(0, 150)}`);
         }
-        // 5xx 服务端错误 / 429 限流可重试
-        throw new Error(`API 返回 ${response.status}`);
+        // 5xx 服务端错误 / 429 限流可重试。用 retryable 标记而非匹配报错文案：
+        // 网关返回 HTML 429 页时同样能正确进入重试分支
+        const e = new Error(`API 返回 ${status}`);
+        e.retryable = true;
+        throw e;
       }
 
       // 检查响应类型
@@ -226,13 +232,13 @@ async function callLLM(systemPrompt, userPrompt) {
       }
 
       // 服务端错误 (5xx) / 限流 (429) 可重试
-      if (err.message.includes('API 返回 5') || err.message.includes('API 返回 429')) {
+      if (err.retryable) {
         console.warn(`[简历填充] 第 ${attempt} 次服务端错误/限流: ${err.message}`);
         if (attempt === MAX_RETRIES) {
           throw new Error(`服务端错误/限流，已重试 ${MAX_RETRIES} 次: ${err.message}`);
         }
-        // 等待后重试（指数退避）
-        await new Promise(r => setTimeout(r, 1000 * attempt));
+        // 等待后重试（指数退避 + 少量抖动，避免并发重试同时撞限流）
+        await new Promise(r => setTimeout(r, 1000 * attempt + Math.floor(Math.random() * 400)));
         continue;
       }
 
@@ -260,6 +266,66 @@ function omitEmpty(obj) {
   return obj;
 }
 
+// ===== 识别提速：提示词瘦身 + 分块并行（推理模型识别慢，拆小并行 + 裁剪输入） =====
+const MAX_FIELDS = 120;        // 单次最多发多少字段
+const CHUNK_THRESHOLD = 25;    // 字段数低于此值时单次调用，避免小表单并行开销
+const CHUNK_COUNT = 4;         // 并行块数
+
+// 超长字符串截断
+function truncate(s, n) {
+  s = String(s ?? '');
+  return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+// profile 长字符串瘦身（description/awards 等）；selfEvaluation 常整体填入 textarea，不截
+function slimProfile(obj, maxLen = 200) {
+  if (typeof obj === 'string') return truncate(obj, maxLen);
+  if (Array.isArray(obj)) return obj.map(v => slimProfile(v, maxLen));
+  if (obj && typeof obj === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) out[k] = k === 'selfEvaluation' ? slimProfile(v, 100000) : slimProfile(v, maxLen);
+    return out;
+  }
+  return obj;
+}
+
+// 按 DOM 顺序连续切片；字段少时退化为单块
+function chunkFields(fields, k) {
+  if (fields.length <= CHUNK_THRESHOLD) return [{ start: 0, fields }];
+  const size = Math.ceil(fields.length / k);
+  const chunks = [];
+  for (let start = 0; start < fields.length; start += size) chunks.push({ start, fields: fields.slice(start, start + size) });
+  return chunks;
+}
+
+// 构建块级 userPrompt + 块级局部 fieldById（块内用 F0..Fm 编号，合并时无需偏移算术，
+// chunk.fields 本身是全局字段数组的一段）
+function buildChunkPrompt(chunk, profileDesc) {
+  const fieldById = new Map();
+  const desc = chunk.fields.map((f, j) => {
+    fieldById.set('F' + j, f);
+    const parts = [`字段ID: F${j}`];
+    if (f.label) parts.push(`标签: ${truncate(f.label, 60)}`);
+    if (f.placeholder) parts.push(`占位符: ${truncate(f.placeholder, 60)}`);
+    if (f.name) parts.push(`name: ${truncate(f.name, 60)}`);
+    if (f.contextText) parts.push(`上下文文本: ${truncate(f.contextText, 60)}`);
+    if (f.options && f.options.length > 0) parts.push(`可选项: ${f.options.slice(0, 15).map(o => truncate(o, 40)).join(', ')}`);
+    parts.push(`组件类型: ${f.componentType || f.tag || 'unknown'}`);
+    return `{${parts.join('; ')}}`;
+  }).join('\n');
+  const userPrompt = `表单字段列表：
+${desc}
+
+用户简历信息：
+${profileDesc}
+
+请为每个字段匹配最合适的用户信息，返回 JSON 数组。
+字段ID 仅限本列表中的 F0~F${chunk.fields.length - 1}，不要返回其他编号。`;
+  return { fieldById, userPrompt };
+}
+
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 // 处理智能填充请求
 async function handleFillForm(fields, profile) {
   const systemPrompt = `你是一个简历表单填充助手。你的任务是根据用户的简历信息，为页面上的每个表单字段选择最合适的填充值。
@@ -275,57 +341,63 @@ async function handleFillForm(fields, profile) {
 6. 宁缺毋滥：即使页面字段是必填项，只要用户简历没有对应信息，也要跳过，不要为了填满而填
 7. 只返回 JSON 数组，不要返回任何其他文字或解释`;
 
-  // 用简短字段ID代替长 CSS 选择器：提示词与响应体量都大幅缩小，显著加快识别
-  const fieldById = new Map();
-  const fieldsDesc = fields.map((f, i) => {
-    fieldById.set('F' + i, f);
-    const parts = [`字段ID: F${i}`];
-    if (f.label) parts.push(`标签: ${f.label}`);
-    if (f.placeholder) parts.push(`占位符: ${f.placeholder}`);
-    if (f.name) parts.push(`name: ${f.name}`);
-    if (f.contextText) parts.push(`上下文文本: ${f.contextText}`);
-    if (f.options && f.options.length > 0) parts.push(`可选项: ${f.options.slice(0, 40).join(', ')}`);
-    parts.push(`组件类型: ${f.componentType || f.tag || 'unknown'}`);
-    return `{${parts.join('; ')}}`;
-  }).join('\n');
+  // 弱字段过滤已在采集端做；这里兜底截断字段上限
+  const filtered = fields.slice(0, MAX_FIELDS);
+  if (filtered.length === 0) return { mappings: [] };
 
-  const profileDesc = JSON.stringify(omitEmpty(profile), null, 2);
+  const profileDesc = JSON.stringify(slimProfile(omitEmpty(profile)), null, 2);  // 只算一次，各块复用
+  const chunks = chunkFields(filtered, CHUNK_COUNT);
 
-  const userPrompt = `表单字段列表：
-${fieldsDesc}
+  // 每块独立请求：构建提示词 → 错开 200ms 防撞限流 → 调用 → 解析
+  const tasks = chunks.map((chunk, k) => {
+    const { fieldById, userPrompt } = buildChunkPrompt(chunk, profileDesc);
+    return delay(k * 200)
+      .then(() => callLLM(systemPrompt, userPrompt))
+      .then(text => ({ parsed: parseLLMArray(text), fieldById }));
+  });
 
-用户简历信息：
-${profileDesc}
+  const results = await Promise.allSettled(tasks);
 
-请为每个字段匹配最合适的用户信息，返回 JSON 数组。`;
-
-  const responseText = await callLLM(systemPrompt, userPrompt);
-
-  // 解析 LLM 返回的 JSON 数组（兼容 markdown 围栏、包裹对象、单个对象）
-  const parsed = parseLLMArray(responseText);
-  if (!parsed) {
-    throw new Error(`LLM 返回格式异常，无法解析填充映射：${responseText.slice(0, 120)}`);
-  }
-
-  // 将 fieldId 还原为真实 selector，并沿用采集时的组件类型（比 LLM 回显更可靠）
-  const mappings = parsed
-    .filter(m => m && m.value !== null && m.value !== undefined && m.value !== '')
-    .map(m => {
+  // 合并各块映射：某块失败不影响其他块
+  const mappings = [];
+  const failedChunks = [];
+  results.forEach((res, k) => {
+    if (res.status !== 'fulfilled' || !res.value || !res.value.parsed) {
+      failedChunks.push(k);
+      if (res.status === 'fulfilled') {
+        console.warn(`[简历填充] 块 ${k + 1}/${chunks.length} 返回格式异常`);
+      } else {
+        console.warn(`[简历填充] 块 ${k + 1}/${chunks.length} 识别失败:`, res.reason && res.reason.message ? res.reason.message : res.reason);
+      }
+      return;
+    }
+    const { parsed, fieldById } = res.value;
+    for (const m of parsed) {
+      if (!m || m.value === null || m.value === undefined || m.value === '') continue;
       let field = null;
       if (m.fieldId != null) {
         const raw = String(m.fieldId);
         field = fieldById.get(raw) || fieldById.get('F' + raw);
       }
       if (field) {
-        return { selector: field.selector, value: String(m.value), componentType: field.componentType };
+        mappings.push({ selector: field.selector, value: String(m.value), componentType: field.componentType });
+        continue;
       }
       // 兼容个别模型不遵守约定、直接返回 selector 的情况
       if (m.selector) {
-        return { selector: m.selector, value: String(m.value), componentType: m.componentType || undefined };
+        mappings.push({ selector: m.selector, value: String(m.value), componentType: m.componentType || undefined });
       }
-      return null;
-    })
-    .filter(Boolean);
+    }
+  });
+
+  // 全部块都失败 → 报错而非静默返回空映射（保留底层错误信息便于排查）
+  if (mappings.length === 0 && failedChunks.length === chunks.length) {
+    const rejected = results.find(r => r.status === 'rejected');
+    if (rejected && rejected.reason) throw rejected.reason;
+    throw new Error(`所有识别请求失败（${chunks.length} 块）`);
+  }
+
+  console.log(`[简历填充] 识别完成: ${chunks.length} 块, 失败 ${failedChunks.length} 块, 映射 ${mappings.length} 条`);
   return { mappings };
 }
 
@@ -457,8 +529,7 @@ async function testLLMConnection(config) {
       model: config.model,
       messages: [
         { role: 'user', content: '请回复"连接成功"四个字' }
-      ],
-      max_tokens: 20
+      ]
     })
   });
 
@@ -468,6 +539,11 @@ async function testLLMConnection(config) {
   }
 
   const data = await response.json();
-  const reply = data.choices?.[0]?.message?.content || '';
-  return { success: true, reply: reply.trim() };
+  // 不设 max_tokens（与主链路一致）：推理模型思考链会占满上限导致正文为空。
+  // 兼容 content 为内容分片数组的格式
+  const content = data.choices?.[0]?.message?.content;
+  const reply = Array.isArray(content)
+    ? content.map(p => (p && typeof p === 'object' && p.text != null ? String(p.text) : '')).join('').trim()
+    : String(content || '').trim();
+  return { success: true, reply };
 }

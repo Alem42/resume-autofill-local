@@ -74,7 +74,11 @@ function loadData() {
 
 function setVal(id, value) {
   const el = document.getElementById(id);
-  if (el) el.value = value || '';
+  if (!el) return;
+  let v = value || '';
+  // 原生 date 输入框只接受 YYYY-MM-DD，简历常见 YYYY-MM → 补 "-01" 避免被置空
+  if (el.type === 'date' && /^\d{4}-\d{1,2}$/.test(v)) v += '-01';
+  el.value = v;
 }
 
 function getVal(id) {
@@ -435,15 +439,22 @@ function applyPendingPdfProfile() {
   chrome.storage.local.get('pendingPdfProfile', result => {
     if (!result.pendingPdfProfile) return;
     chrome.storage.local.remove('pendingPdfProfile');
-    if (!confirm('检测到上次未完成的 PDF 解析结果，是否应用到表单？')) {
+    // 扩展弹窗里 window.confirm 不可靠（抢焦点/可能被拦截），用页内确认弹窗
+    const modal = document.getElementById('pdf-confirm-modal');
+    document.getElementById('pdf-confirm-text').textContent = '检测到上次未完成的 PDF 解析结果，是否应用到表单？';
+    modal.style.display = 'flex';
+    document.getElementById('pdf-confirm-confirm').onclick = () => {
+      modal.style.display = 'none';
+      fillFormFromProfile(result.pendingPdfProfile);
+      scheduleSave();
+      showStatus('save-status', '已应用上次未完成的 PDF 解析结果', 'success');
+      setTimeout(() => showStatus('save-status', '', ''), 4000);
+    };
+    document.getElementById('pdf-confirm-cancel').onclick = () => {
+      modal.style.display = 'none';
       showStatus('save-status', '已放弃上次的解析结果', '');
       setTimeout(() => showStatus('save-status', '', ''), 3000);
-      return;
-    }
-    fillFormFromProfile(result.pendingPdfProfile);
-    scheduleSave();
-    showStatus('save-status', '已应用上次未完成的 PDF 解析结果', 'success');
-    setTimeout(() => showStatus('save-status', '', ''), 4000);
+    };
   });
 }
 
@@ -542,14 +553,27 @@ function exportJSON() {
 function importJSON(jsonStr) {
   try {
     const data = JSON.parse(jsonStr);
-    chrome.storage.local.set(data, () => {
-      loadData(); // 重新加载表单
-      showStatus('save-status', '导入成功！', 'success');
-      setTimeout(() => showStatus('save-status', '', ''), 2000);
-    });
+    // 导出的文件刻意不含 apiKey：若导入数据缺 Key，补回现有 Key，
+    // 避免整块覆盖把已配置的 API Key 清空
+    if (data.llm && data.llm.apiKey === undefined) {
+      chrome.storage.local.get('llm', result => {
+        if (result.llm && result.llm.apiKey) data.llm = { ...data.llm, apiKey: result.llm.apiKey };
+        doImport(data);
+      });
+    } else {
+      doImport(data);
+    }
   } catch (e) {
     showStatus('save-status', 'JSON 格式错误', 'error');
   }
+}
+
+function doImport(data) {
+  chrome.storage.local.set(data, () => {
+    loadData(); // 重新加载表单
+    showStatus('save-status', '导入成功！', 'success');
+    setTimeout(() => showStatus('save-status', '', ''), 2000);
+  });
 }
 
 // ===== 事件绑定 =====
