@@ -610,7 +610,18 @@
   // ===== 选择器生成 =====
   function generateSelector(el) {
     if (el.id) return `#${CSS.escape(el.id)}`;
-    if (el.name) return `${el.tagName.toLowerCase()}[name="${CSS.escape(el.name)}"]`;
+
+    // name 快捷路径仅在页面唯一匹配时使用：同名重复字段（多区块表单）会被
+    // document.querySelector 统一命中第一个元素 → 后续条目的值写错位置。不唯一时
+    // 回退到带 nth-of-type 的完整路径（nth-of-type 按位置定位，天然唯一）
+    if (el.name) {
+      const sel = `${el.tagName.toLowerCase()}[name="${CSS.escape(el.name)}"]`;
+      try {
+        if (document.querySelectorAll(sel).length <= 1) return sel;
+      } catch {
+        return sel;
+      }
+    }
 
     const path = [];
     let current = el;
@@ -639,14 +650,33 @@
     return path.join(' > ');
   }
 
+  // 日期值 → 可比较数字（2026-06 → 202606），用于按值倒序排日期字段
+  function dateSortKey(v) {
+    const m = /^(\d{4})[-\/.](\d{1,2})?/.exec(String(v || '').trim());
+    if (!m) return 0;
+    return parseInt(m[1] + (m[2] ? String(+m[2]).padStart(2, '0') : '00'), 10);
+  }
+
   // ===== 填充执行 =====
   async function executeFill(mappings, onProgress) {
     let count = 0;
     const undoData = [];
     const total = mappings.length;
 
-    for (let i = 0; i < mappings.length; i++) {
-      const mapping = mappings[i];
+    // 日期对（起止时间）先填结束、后填开始：B 站校验"起始时间不能晚于结束时间"，
+    // 页面上旧结束时间早于新开始时，先填开始会被拒、回退到旧值（实测 2026-06→2025-06）。
+    // 日期字段按值倒序放到最后处理（不依赖 LLM 返回顺序）：每对结束在前、开始在后，
+    // 且简历里 start ≤ end 保证都通过
+    const rest = [];
+    const dates = [];
+    for (const m of mappings) {
+      if (m.componentType === 'custom-datepicker') dates.push(m);
+      else rest.push(m);
+    }
+    const ordered = rest.concat(dates.sort((a, b) => dateSortKey(b.value) - dateSortKey(a.value)));
+
+    for (let i = 0; i < ordered.length; i++) {
+      const mapping = ordered[i];
       // 防御：LLM 返回空值时跳过，避免填充空字段
       if (mapping.value === null || mapping.value === undefined || mapping.value === '') {
         if (onProgress) onProgress(i + 1, total);
@@ -654,6 +684,7 @@
       }
       const el = findElement(mapping.selector);
       if (!el) {
+        console.log('[简历填充] 未找到元素:', mapping.selector, mapping.componentType, '值:', mapping.value);
         if (onProgress) onProgress(i + 1, total);
         continue;
       }
@@ -665,21 +696,23 @@
         const originalValue = getFieldValue(el);
         undoData.push({ selector: mapping.selector, originalValue, componentType });
 
-        await fillByType(el, value, componentType);
+        await fillByType(el, value, componentType, mapping.selector);
         highlightField(el);
         count++;
       } catch (e) {
-        console.warn('[简历填充] 填充失败:', mapping.selector, componentType, e);
+        console.warn('[简历填充] 填充失败:', mapping.selector, componentType, '值:', value, e);
       }
       if (onProgress) onProgress(i + 1, total);
       await sleep(150);
     }
 
+    // 兜底清理：关闭可能残留的下拉/日期面板
+    await closeAllPanels();
     filledFields = undoData;
     return count;
   }
 
-  async function fillByType(el, value, componentType) {
+  async function fillByType(el, value, componentType, selector) {
     switch (componentType) {
       case 'native-input':
       case 'wrapper-input':
@@ -695,7 +728,7 @@
         await fillGenericDropdown(el, value);
         break;
       case 'custom-datepicker':
-        await fillGenericDatepicker(el, value);
+        await fillGenericDatepicker(el, value, selector);
         break;
       default:
         // 兜底：尝试当原生 input 填充
@@ -776,6 +809,11 @@
     trigger.click();
     await sleep(350);
 
+    // 显式聚焦输入框：程序化 click 不会聚焦，而部分框架（B 站）忽略文档级合成事件、
+    // 只响应输入框自身的 blur/Escape 收面板 → 让 activeElement 落在输入框上，收起机制才能命中
+    const focusInput = el.tagName === 'INPUT' ? el : (el.querySelector('input') || el);
+    if (focusInput && typeof focusInput.focus === 'function') focusInput.focus();
+
     // 3. 搜索框：仅地点类值（含 省/市 等区划词）才用，且只搜第一段，避免整值搜空把选项过滤掉
     const searchInput = el.querySelector('input[class*="search"], input[class*="filter"]') ||
                         el.querySelector('input:not([type="hidden"]):not([readonly])');
@@ -814,12 +852,10 @@
       await sleep(200);                         // 等下一级渲染
     }
 
-    // 收尾：主动收起面板。选中后部分下拉/级联不会自动关闭（尤其只选"省"时级联停在市列表）；
-    // ant 等框架靠 document 上的 mousedown / Escape 关闭弹层，所以三种机制都发一遍兜底
+    // 收尾：主动收起面板。部分框架忽略合成事件导致面板残留（B 站实测不关），
+    // 用多层机制（Escape/blur/文档 mousedown/body click）+ 检测重试，确认面板消失
     if (clickedAny) await sleep(120);   // 等框架处理完选中事件
-    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
-    document.body.click();
+    await closeOpenPanel(el, trigger);
   }
 
   // 地点类值只取"省"段用于搜索（"湖南长沙"/"湖南省" → "湖南"），其余值原样返回
@@ -854,20 +890,245 @@
   }
 
   // 通用日期选择器填充
-  async function fillGenericDatepicker(el, value) {
-    const input = el.querySelector('input') || el;
-    input.click();
-    input.focus();
-    await sleep(250);
-
+  async function fillGenericDatepicker(el, value, selector) {
+    const input = el.tagName === 'INPUT' ? el : (el.querySelector('input') || el);
+    // 优先：ant-design-vue 日历点选。readonly + controlled 的 DatePicker 直接 setter 赋值 + Enter
+    // 不生效（实测：面板打开时赋值会被忽略，值回退为空），必须点日历格子真正选中
+    const ok = await selectDateInCalendar(input, value, selector);
+    if (ok) {
+      // 已确认提交 → 用 Escape-first 可靠关闭面板（protect 的非破坏性关闭在 B 站不保证生效，
+      // 残留面板会污染下一个日期字段的日历点选）
+      await closeOpenPanel(el, el, false);
+      return;
+    }
+    // 兜底：先可靠关掉面板，再赋值 + Enter（ant readonly 上多不生效，但非 ant 控件可用）
+    await closeOpenPanel(el, el, false);
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
     if (setter) setter.call(input, value); else input.value = value;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    await sleep(200);
+    await sleep(120);
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-    await sleep(100);
+    await sleep(120);
+    input.blur();
+    await closeOpenPanel(el, el, true);
+  }
+
+  // ===== ant-design-vue DatePicker 日历点选 =====
+  // 点击输入框打开日历面板 → 年份面板选年（跨 decade 自动翻页）→ 月份面板按月序号选月 →
+  // 点目标日期格子（当前月、按天数匹配，与语言无关）。
+  // 导航失败（面板找到但点选中途失败，多为过渡/时序）会清理现场后重试；
+  // 根本没弹面板（非 ant 控件）不重试，直接走回退赋值。
+  async function selectDateInCalendar(input, value, selector) {
+    const m = /^(\d{4})[-\/.](\d{1,2})(?:[-\/.](\d{1,2}))?/.exec(String(value || '').trim());
+    if (!m) return false;
+    const year = +m[1], month = +m[2], day = m[3] ? +m[3] : 1;
+
+    // ant 输入框（.ant-calendar-picker 内）首次打开面板可能较慢 → 无面板也重试；
+    // 非 ant 控件（根本不是 ant 日历）返回 false 不重试，直接走回退赋值
+    const isAnt = !!input.closest('.ant-calendar-picker');
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // Vue 重渲染可能替换输入框节点（提交一次值后列表重排）→ 每次尝试前按 selector 重查，
+      // 否则点的是 detached 旧引用，面板打不开（B 站 2026-06 实测卡在这）
+      if (selector) {
+        const fresh = findElement(selector);
+        // selector 可能指向容器（采集时未解包）→ 重查后同样解包成内部 input
+        if (fresh) input = fresh.tagName === 'INPUT' ? fresh : (fresh.querySelector('input') || fresh);
+      }
+      const r = await trySelectDate(input, year, month, day);
+      if (r === true) {
+        // 提交后校验：B 站 Vue 重渲染慢时月份点击会用旧年份提交（实测差一年），
+        // 年份不符则当失败重试（第二次面板已热，通常能对上）
+        const val = String(input.value || '').trim();
+        if (/^\d{4}/.test(val) && parseInt(val.slice(0, 4), 10) === year) return true;
+        console.warn('[简历填充] 日期年份不符，重试:', value, '→', input.value);
+      } else if (r === false && !isAnt) {
+        return false;   // 非 ant，重试无意义
+      }
+      // 清理现场后重试：必须用 Escape-on-input 可靠关掉残留面板
+      // （B 站忽略 document 级合成事件，直接用 body mousedown/Escape 关不掉，
+      //   下次 input.click() 会把还开着的面板 toggle 关掉 → 找不到面板）
+      await closeOpenPanel(input, input, false);
+      await sleep(200);
+    }
+    return false;
+  }
+
+  // 单次日历点选；返回 true / false（无面板）/ 'nav-failed'（面板在但导航中断）
+  async function trySelectDate(input, year, month, day) {
+    input.click();
+    input.focus();
+    await sleep(400);
+    let panel = findOpenCalendarNear(input);
+    if (!panel) return false;
+
+    // 读当前显示年份：近距离（±6 年内且非同年）用"上一年/下一年"按钮直接跳——
+    // 避免年份面板导航的竞态（B 站实测偶发选错年，如 2025-05 被选成 2026）；
+    // 同年或远距离（如 2002）走年份面板（同年的面板流程已验证可用）
+    const curYearEl = panel.querySelector('.ant-calendar-year-select');
+    const curYear = curYearEl ? parseInt(curYearEl.textContent.trim(), 10) : NaN;
+    const diff = isNaN(curYear) ? NaN : year - curYear;
+    if (!isNaN(diff) && diff !== 0 && Math.abs(diff) <= 6) {
+      const stepBtn = panel.querySelector(diff > 0 ? '.ant-calendar-next-year-btn' : '.ant-calendar-prev-year-btn');
+      if (!stepBtn) return 'nav-failed';
+      for (let i = 0; i < Math.abs(diff); i++) {
+        stepBtn.click();
+        await sleep(120);
+      }
+    } else {
+      const yearBtn = panel.querySelector('.ant-calendar-year-select');
+      if (!yearBtn) return 'nav-failed';
+      yearBtn.click();
+      await sleep(400);
+      panel = findOpenCalendarNear(input);
+      if (!panel) return 'nav-failed';
+      let yCell = findYearCell(panel, year);
+      for (let i = 0; i < 8 && !yCell; i++) {
+        const years = Array.from(panel.querySelectorAll('.ant-calendar-year-panel-year'))
+          .map(y => parseInt(y.textContent.trim(), 10)).filter(n => !isNaN(n));
+        if (!years.length) return 'nav-failed';
+        const first = Math.min(...years);
+        const btn = panel.querySelector(year < first ? '.ant-calendar-year-panel-prev-decade-btn' : '.ant-calendar-year-panel-next-decade-btn');
+        if (!btn) return 'nav-failed';
+        btn.click();
+        await sleep(300);
+        panel = findOpenCalendarNear(input);
+        if (!panel) return 'nav-failed';
+        yCell = findYearCell(panel, year);
+      }
+      if (!yCell) return 'nav-failed';
+      yCell.click();
+      // B 站 Vue 重渲染较慢：选完年后等久一点，再切回月份网格，降低"用旧年份提交"的竞态
+      await sleep(500);
+    }
+
+    // 月份面板（按月序号匹配，避免语言差异）。
+    // 注意：月份选择器（mode=month / MonthPicker，B 站起止时间即是）选完年份后
+    // 面板仍停在年份视图，必须再点 month-select 切回月份网格；普通日期选择器同理打开月份面板
+    panel = findOpenCalendarNear(input);
+    if (!panel) return 'nav-failed';
+    const monthBtn = panel.querySelector('.ant-calendar-month-select');
+    if (!monthBtn) return 'nav-failed';
+    monthBtn.click();
+    await sleep(500);
+    panel = findOpenCalendarNear(input);
+    if (!panel) return 'nav-failed';
+    const mCell = Array.from(panel.querySelectorAll('.ant-calendar-month-panel-month'))[month - 1];
+    if (!mCell) return 'nav-failed';
+    mCell.click();
+    await sleep(350);
+
+    // 月份模式：点完月份即提交，无日期格子；日期模式：面板切到日视图，再点目标天
+    panel = findOpenCalendarNear(input);
+    if (panel && panel.querySelector('.ant-calendar-date-panel, .ant-calendar-date')) {
+      const dCell = Array.from(panel.querySelectorAll('.ant-calendar-cell:not(.ant-calendar-last-month-cell):not(.ant-calendar-next-month-cell)'))
+        .find(td => {
+          const d = td.querySelector('.ant-calendar-date');
+          return d && d.textContent.trim() === String(day);
+        });
+      if (!dCell) return 'nav-failed';
+      dCell.querySelector('.ant-calendar-date').click();
+      await sleep(150);
+    }
+    return true;
+  }
+
+  // 打开中的 ant 日历面板（portal 在 body 下）。
+  // 优先取紧邻输入框的；找不到则退回任意可见面板——面板可能开在输入框上方
+  // （字段在视口底部时朝上弹出），严格按位置找会漏。忽略 opacity（过渡中会为 0）。
+  function findOpenCalendarNear(el) {
+    const r = el.getBoundingClientRect();
+    let anyVisible = null;
+    for (const node of document.querySelectorAll('.ant-calendar-picker-panel, .ant-calendar')) {
+      const s = getComputedStyle(node);
+      if (s.display === 'none' || s.visibility === 'hidden') continue;
+      const pr = node.getBoundingClientRect();
+      if (pr.width <= 0 || pr.height <= 0) continue;
+      if (!anyVisible) anyVisible = node;
+      if (pr.left < r.right + 400 && pr.right > r.left - 400 &&
+          pr.top >= r.top - 400 && pr.top <= r.bottom + 900) return node;
+    }
+    return anyVisible;
+  }
+
+  function findYearCell(panel, year) {
+    const cells = panel.querySelectorAll('.ant-calendar-year-panel-year');
+    for (const c of cells) if (c.textContent.trim() === String(year)) return c;
+    return null;
+  }
+
+  // ===== 面板收起（下拉/级联/日期共用） =====
+  // 部分框架（尤其 B 站 ant-design-vue / bili-date）忽略 isTrusted=false 的合成事件，
+  // 只发 document 级 mousedown/click 关不掉面板。因此：多层机制 + 确认重试。
+  const PANEL_SELECTORS = [
+    '[role="listbox"]', '[role="dialog"]',
+    '[class*="dropdown-menu"]', '[class*="dropdown-content"]', '[class*="dropdown-list"]',
+    '[class*="menus"]', '[class*="menu-list"]', '[class*="popup"]',
+    '[class*="picker-panel"]', '[class*="calendar-panel"]', '[class*="calendar"]',
+    '[class*="panel"]', '[class*="cascader-menu"]', '[class*="option-list"]'
+  ].join(',');
+
+  // 字段附近是否仍有打开的面板（宽松判断，仅用于确认收起；误报无害）
+  function isPanelOpenNear(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return false;
+    for (const node of document.querySelectorAll(PANEL_SELECTORS)) {
+      if (!isVisible(node)) continue;
+      const pr = node.getBoundingClientRect();
+      const hOverlap = pr.left < r.right + 150 && pr.right > r.left - 150;
+      const vNear = pr.top >= r.top - 120 && pr.top <= r.bottom + 600;
+      if (hOverlap && vNear) return true;
+    }
+    return false;
+  }
+
+  // 发一轮收起事件。
+  // 关键：多数框架（ant Select/DatePicker、bili-date）把 Escape 监听挂在输入框上，
+  // 对输入框本身派发 Escape 不受 isTrusted 限制、也无需元素在焦点上。
+  // withEscape=false 用于日期选择器首轮：Escape 会取消"Enter 刚确认的日期"，
+  // 所以先只发非破坏性关闭（blur + 文档 mousedown/click），面板仍开着才升级 Escape
+  function fireCloseEvents(el, trigger, withEscape) {
+    // el/trigger 本身就是输入框时（日期选择器字段），直接用其作为 Escape/blur 目标——
+    // 否则 querySelector('input') 返回 null，Escape 打不到输入框，面板关不掉（B 站实测）
+    const asInput = node => node && node.tagName === 'INPUT' ? node : null;
+    const inner = asInput(trigger) ||
+                  (trigger && trigger.querySelector ? trigger.querySelector('input') : null) ||
+                  asInput(el) ||
+                  (el && el.querySelector ? el.querySelector('input') : null);
+    if (withEscape) {
+      if (inner) inner.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+      const act = document.activeElement;
+      if (act && act !== document.body && typeof act.blur === 'function') {
+        act.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+      }
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+    }
+    const act = document.activeElement;
+    if (act && act !== document.body && typeof act.blur === 'function') act.blur();
+    if (inner && inner !== document.activeElement) inner.blur();
+    document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     document.body.click();
+  }
+
+  // 主动收起：下拉/级联直接命中 Escape（B 站 ant 忽略文档级事件，实测有效）；
+  // protect=true（日期选择器）首轮不带 Escape，避免取消刚确认的日期
+  async function closeOpenPanel(el, trigger, protect) {
+    fireCloseEvents(el, trigger, !protect);
+    await sleep(protect ? 150 : 120);
+    for (let i = 0; i < 3 && isPanelOpenNear(el); i++) {
+      fireCloseEvents(el, trigger, true);
+      await sleep(150);
+    }
+  }
+
+  // 兜底：填充/撤回结束后清理任何残留面板
+  async function closeAllPanels() {
+    for (let i = 0; i < 2; i++) {
+      fireCloseEvents(null, null, i > 0);
+      await sleep(100);
+    }
   }
 
   // ===== 高亮 =====
@@ -890,6 +1151,7 @@
       }
       if (btn) updateButtonText(btn, `撤回中 ${i + 1}/${total}`, 'loading');
     }
+    await closeAllPanels();
     filledFields = [];
     if (btn) updateButtonText(btn, '自动填充', '');
   }

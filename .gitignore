@@ -8,3 +8,6 @@ Thumbs.db
 
 # Claude Code — machine-local settings (permissions, paths)
 .claude/settings.local.json
+
+# Playwright CLI 会话产物
+.playwright-cli/

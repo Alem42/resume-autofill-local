@@ -246,6 +246,9 @@
       const provMenu = document.getElementById('prov-menu');
       const cityMenu = document.getElementById('city-menu');
       let curProv = '';
+      // ?stubborn：模拟 B 站——忽略文档级合成关闭事件，只响应输入框自身的 blur / Escape，
+      // 用于复现"面板开着收不掉、越铺越多"的问题
+      const stubborn = /stubborn/.test(location.search);
 
       Object.keys(REGIONS).forEach(p => {
         const li = document.createElement('li');
@@ -287,11 +290,18 @@
         if (!li) return;
         input.value = curProv + '/' + li.dataset.city;
         label.textContent = input.value;
-        close();
+        if (!stubborn) close();   // ?stubborn：选完不自动关，模拟 B 站"选中后面板残留"
       });
-      document.addEventListener('click', (e) => {
-        if (!box.contains(e.target)) close();
-      });
+      if (stubborn) {
+        input.addEventListener('blur', close);
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') { e.stopPropagation(); close(); }
+        });
+      } else {
+        document.addEventListener('click', (e) => {
+          if (!box.contains(e.target)) close();
+        });
+      }
     })();
   </script>
 </body>

@@ -528,6 +528,7 @@ function fillFormFromProfile(profile) {
 // ===== JSON 导入/导出 =====
 function exportJSON() {
   const data = collectFormData();
+  delete data.llm.apiKey;   // 导出文件不含 API Key，避免文件分享泄露密钥
   const json = JSON.stringify(data, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
