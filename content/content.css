@@ -47,12 +47,6 @@
   animation: pulse 1.5s ease-in-out infinite;
 }
 
-#resume-autofill-btn.result {
-  background: linear-gradient(135deg, #52c41a 0%, #73d13d 100%);
-  box-shadow: 0 4px 12px rgba(82, 196, 26, 0.4);
-  cursor: pointer;
-}
-
 #resume-autofill-btn.error {
   background: linear-gradient(135deg, #ff4d4f 0%, #ff7875 100%);
   box-shadow: 0 4px 12px rgba(255, 77, 79, 0.4);

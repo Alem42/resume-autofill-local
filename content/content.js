@@ -6,29 +6,7 @@
 
   if (document.getElementById('resume-autofill-btn')) return;
 
-  let filledFields = [];
-  let running = false;               // 重入保护：填充/撤回异步期间忽略重复点击
-
-  // 获取字段当前值
-  function getFieldValue(el) {
-    if (el.isContentEditable) return el.textContent || '';
-    // select 返回选中项文本（与 fillNativeSelect 的匹配依据一致），
-    // 而非 selectedIndex——撤回时数字既匹配不上 opt.value 也没有 .includes
-    if (el.tagName.toLowerCase() === 'select') {
-      const opt = el.options[el.selectedIndex >= 0 ? el.selectedIndex : 0];
-      return opt ? (opt.textContent.trim() || opt.value) : '';
-    }
-    // 自定义下拉/级联容器：el.value 恒为空，当前值在内部输入框或选中项文本里，
-    // 撤回时要据此恢复原值
-    if (el.tagName.toLowerCase() !== 'input' && el.tagName.toLowerCase() !== 'textarea') {
-      const innerInput = el.querySelector('input:not([type="hidden"])');
-      if (innerInput && innerInput.value) return innerInput.value;
-      const selection = el.querySelector('[class*="selection-item"], [class*="selected"], [class*="value"], [class*="placeholder"]');
-      if (selection && selection.textContent.trim()) return selection.textContent.trim();
-      return '';
-    }
-    return el.value || '';
-  }
+  let running = false;               // 重入保护：填充异步期间忽略重复点击
 
   // ===== 浮动按钮（可拖拽） =====
   function createFloatingButton() {
@@ -77,11 +55,6 @@
     let ticker = null;
 
     try {
-      if (btn.classList.contains('result')) {
-        await undoFill(btn);
-        return;
-      }
-
       // 阶段 1：读取简历数据（本地读取，很快）
       updateButtonText(btn, '读取简历中...', 'loading');
       const profile = await getProfile();
@@ -143,7 +116,7 @@
         updateButtonText(btn, '未匹配到可填充字段', 'error');
         setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
       } else {
-        updateButtonText(btn, `已填充 ${count}/${fields.length} 个字段（点击撤回）`, 'result');
+        updateButtonText(btn, `已填充 ${count}/${fields.length} 个字段`, '');
       }
     } catch (err) {
       updateButtonText(btn, '出错了', 'error');
@@ -719,7 +692,6 @@
   // ===== 填充执行 =====
   async function executeFill(mappings, onProgress) {
     let count = 0;
-    const undoData = [];
     const total = mappings.length;
 
     // 日期对（起止时间）先填结束、后填开始：B 站校验"起始时间不能晚于结束时间"，
@@ -752,9 +724,6 @@
       const componentType = mapping.componentType || detectComponentType(el);
 
       try {
-        const originalValue = getFieldValue(el);
-        undoData.push({ selector: mapping.selector, originalValue, componentType });
-
         await fillByType(el, value, componentType, mapping.selector);
         highlightField(el);
         count++;
@@ -767,7 +736,6 @@
 
     // 兜底清理：关闭可能残留的下拉/日期面板
     await closeAllPanels();
-    filledFields = undoData;
     return count;
   }
 
@@ -931,14 +899,6 @@
   // 通用下拉框填充（Ant Design / Element / Arco / 任意自定义下拉；支持省/市级联逐级选择）
   async function fillGenericDropdown(el, value) {
     const v = String(value || '').trim();
-    // 清空场景（撤回恢复为空）：点 clear/× 按钮清空；无按钮则收面板（尽力而为）
-    if (!v) {
-      const root = el.closest('[class*="select"], [class*="cascader"], [class*="picker"]') || el;
-      const clearBtn = root.querySelector('[class*="clear"], [class*="close-icon"], [class*="remove-icon"]');
-      if (clearBtn) { clearBtn.click(); await sleep(120); }
-      await closeOpenPanel(el, root);
-      return;
-    }
 
     // 1. 记录打开前已可见的选项（属于其他已打开的面板），避免误点；
     //    只排除"打开前就可见"的，隐藏后由本次打开显示的面板选项不会被误排除
@@ -1431,7 +1391,7 @@
     }
   }
 
-  // 兜底：填充/撤回结束后清理任何残留面板
+  // 兜底：填充结束后清理任何残留面板
   async function closeAllPanels() {
     for (let i = 0; i < 2; i++) {
       fireCloseEvents(null, null, i > 0);
@@ -1446,22 +1406,6 @@
     target.style.boxShadow = '0 0 0 2px rgba(82, 196, 26, 0.5)';
     target.style.transition = 'box-shadow 0.3s';
     setTimeout(() => { target.style.boxShadow = orig; }, 2000);
-  }
-
-  // ===== 撤回（恢复原值） =====
-  async function undoFill(btn) {
-    const total = filledFields.length;
-    for (let i = 0; i < filledFields.length; i++) {
-      const { selector, originalValue, componentType } = filledFields[i];
-      const el = findElement(selector);
-      if (el) {
-        try { await fillByType(el, originalValue || '', componentType); } catch {}
-      }
-      if (btn) updateButtonText(btn, `撤回中 ${i + 1}/${total}`, 'loading');
-    }
-    await closeAllPanels();
-    filledFields = [];
-    if (btn) updateButtonText(btn, '自动填充', '');
   }
 
   // ===== 工具函数 =====
