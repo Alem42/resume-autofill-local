@@ -9,5 +9,8 @@ Thumbs.db
 # Claude Code â€” machine-local settings (permissions, paths)
 .claude/settings.local.json
 
-# Playwright CLI ä¼šè¯äº§ç‰©
+# Playwright ä¼šè¯äº§ç‰©
 .playwright-cli/
+.playwright-mcp/
+# Sisyphus ¹¤×÷±Ê¼Ç
+.sisyphus/

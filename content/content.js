@@ -171,8 +171,15 @@
       // 必须走组件交互。先判日期（如 B 站 bili-date），再判下拉。
       if (el.readOnly) {
         if (hasDatepickerBehavior(el)) return 'custom-datepicker';
-        if (hasDropdownBehavior(el) || el.closest('[class*="select"], [class*="cascader"], [class*="picker"], [class*="dropdown"], [role="combobox"]')) return 'custom-dropdown';
+        if (hasDropdownBehavior(el)) return 'custom-dropdown';
+        // 只读但无任何行为信号：仍是自定义组件，标记为可交互类型，填充时打开面板探测
+        return 'custom-interactive';
       }
+      // 非只读 input 也可能是自定义组件（如 Moka sd-Select 内部 input 非 readonly）：
+      // placecholder="请选择" 或容器含 select/dropdown 关键词 → 自定义下拉；
+      // picker-addon 子元素或日期占位符 → 自定义日期选择器（日期优先判，避免被下拉的 picker 关键词劫持）
+      if (hasDatepickerBehavior(el)) return 'custom-datepicker';
+      if (hasDropdownBehavior(el)) return 'custom-dropdown';
       return 'native-input';
     }
 
@@ -195,20 +202,40 @@
     if (el.getAttribute('aria-haspopup') === 'listbox' ||
         el.getAttribute('aria-haspopup') === 'dialog' ||
         el.getAttribute('role') === 'combobox') return true;
-    // 类名中的通用模式（匹配任何框架）
+    // 类名中的通用模式（匹配任何框架）—— 子串匹配，不用 \b 词边界：
+    // CSS Modules / hash 类名用 _ 或 - 分隔（如 sd-Select-container、date_info），
+    // \b 会把 _ 当单词字符 → \bselect\b 漏掉 sd_Select
     const cls = (typeof el.className === 'string') ? el.className : '';
-    if (/\b(select|dropdown|combo|picker|cascader)\b/i.test(cls) && el.tagName.toLowerCase() !== 'select') return true;
+    if (el.tagName.toLowerCase() !== 'select' && /select|dropdown|combo|picker|cascader/i.test(cls)) return true;
+    // 自身不匹配时检查最近祖先容器（如 Moka input 在 sd-Select-container 内，自身类名不含 select）
+    const anc = el.closest('[class*="select"], [class*="picker"], [class*="dropdown"], [class*="cascader"], [role="combobox"]');
+    if (anc) return true;
+    // placeholder 信号："请选择" 强烈暗示为下拉
+    if ((el.placeholder || '').includes('请选择')) return true;
     // 有展开状态的元素
     if (el.getAttribute('aria-expanded') !== null) return true;
     return false;
   }
 
   // 通用日期选择器行为检测
+  // 注：不用 \b 词边界，因为 date_info / sd-picker-addon 等 _ 和 - 都是 word 字符，
+  // \b 会漏掉这些模式。用宽松子串匹配，但必须与 readonly / date 占位符 / picker-addon
+  // 子元素联合使用，避免将普通输入框误判为日期选择器（detectComponentType 做最终裁决）
   function hasDatepickerBehavior(el) {
     const cls = (typeof el.className === 'string') ? el.className : '';
-    if (/\b(date|calendar|日历|时间)\b/i.test(cls)) return true;
-    // 内含 input 且类名含 date
-    if (el.querySelector('input') && /\b(date|time)\b/i.test(cls)) return true;
+    // 自身类名含强日期信号（不用裸 date/picker，避免 candidate/updated/select 误判）
+    if (/datepicker|date-picker|date_info|calendar|picker-addon|日历|时间选择/i.test(cls)) return true;
+    // 子元素含 picker-addon / calendar / datepicker 图标（如 Moka sd-picker-addon）
+    if (el.querySelector('[class*="picker-addon"], [class*="calendar"], [class*="datepicker"], [class*="date-picker"]')) return true;
+    // placeholder 含强日期信号（只用出生/生日/birth/年月，不用裸"日期"/"时间"
+    // 避免"更新日期""发布时间"等纯文本输入框误判）
+    const ph = (el.placeholder || '').toLowerCase();
+    if (/出生|生日|birth|年\s*月/.test(ph) && ph.length > 0) return true;
+    // 容器类名含强日期模式（如 month-range-select date_info）
+    const anc = el.closest('[class*="datepicker"], [class*="date-picker"], [class*="date_info"], [class*="calendar"], [class*="picker-addon"]');
+    if (anc) return true;
+    // 内含 input 且自身类名含 date/time（保留原有，放宽正则）
+    if (el.querySelector('input') && /date|time/i.test(cls)) return true;
     return false;
   }
 
@@ -319,6 +346,20 @@
         if (text && text.length < 50) opts.add(text);
       });
       if (opts.size > 0) return Array.from(opts);
+    }
+    // 兜底：从菜单容器内采集叶子文本节点（如 Moka sd-Select-menu 裸 span 无 role/class）
+    const menuContainers = containerEl.querySelectorAll('[class*="menu"], [class*="select"] [class*="menu"], [class*="dropdown"]');
+    for (const menu of menuContainers) {
+      const leaves = menu.querySelectorAll('*');
+      const texts = new Set();
+      for (const leaf of leaves) {
+        // 跳过装饰性元素（箭头/图标/空元素）和含子元素的容器
+        if (leaf.children.length > 0) continue;
+        if (/arrow|icon|caret|clear|close|remove/i.test((typeof leaf.className === 'string' ? leaf.className : '') || '')) continue;
+        const text = (leaf.textContent || '').trim();
+        if (text && text.length > 0 && text.length < 50) texts.add(text);
+      }
+      if (texts.size > 0) return Array.from(texts);
     }
     return [];
   }
@@ -745,6 +786,10 @@
       case 'custom-dropdown':
         await fillGenericDropdown(el, value);
         break;
+      case 'custom-interactive':
+        // 只读但无法预先判类型：先当自定义下拉尝试（最常见），失败则当日期
+        await fillGenericDropdown(el, value);
+        break;
       case 'custom-datepicker':
         await fillGenericDatepicker(el, value, selector);
         break;
@@ -770,7 +815,6 @@
       ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
     if (setter) setter.call(el, v); else el.value = v;
-    el.dispatchEvent(new Event('focus', { bubbles: true }));
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     el.dispatchEvent(new Event('blur', { bubbles: true }));
@@ -816,6 +860,74 @@
     el.blur();
   }
 
+  // 读取自定义下拉字段当前已选中的显示值（如 Moka .sd-Input-display-value-* span）
+  function getDropdownDisplayValue(el) {
+    if (el && el.closest) {
+      const container = el.closest('label[class*="Select-container"], [class*="sd-Select-container"], label');
+      if (container) {
+        const dv = container.querySelector('[class*="display-value"], [class*="selection-item"], [class*="selected"], [class*="value"]');
+        if (dv) {
+          const t = dv.textContent.trim();
+          if (t) return t;
+        }
+      }
+    }
+    return '';
+  }
+
+  // 安全点击选项：尝试目标→父→祖父，某些框架（如 Moka）点击处理器挂在
+  // 选项的父元素上，直接点叶子 span 不生效。点击后等 250ms 验证值变化：
+  // （1）input.value 变化（ant/B站/v-model 控件），或
+  // （2）字段容器内显示值 span 文本变化（Moka 等自定义组件，input.value 不变）
+  async function clickOptionWithRetryAsync(el, input, targetText) {
+    const beforeValue = input ? String(input.value || '').trim() : '';
+    const beforeDisplay = getDropdownDisplayValue(input);
+    for (let target = el, i = 0; i < 4 && target && target !== document.body; i++, target = target.parentElement) {
+      if (typeof target.click !== 'function') continue;
+      target.click();
+      await sleep(250);
+      const afterValue = input ? String(input.value || '').trim() : '';
+      if (afterValue !== beforeValue) return true;
+      const afterDisplay = getDropdownDisplayValue(input);
+      if (afterDisplay && afterDisplay !== beforeDisplay) return true;
+    }
+    return false;
+  }
+
+  // 全文档扫描：在面板打开后，收集所有"新出现"的可见文本叶子节点作为候选选项
+  // 不依赖 option/role/class 名，适用于 CSS Modules / hash 类名的自定义组件库
+  function collectVisibleOptionCandidates(excludeSet, triggerEl, fieldEl) {
+    const candidates = [];
+    const triggerRect = triggerEl ? triggerEl.getBoundingClientRect() : null;
+    for (const el of document.querySelectorAll('*')) {
+      if (excludeSet.has(el)) continue;
+      if (!isVisible(el)) continue;
+      if (el.contains(triggerEl)) continue;
+      if (fieldEl && fieldEl.contains(el)) continue;
+      if (el.closest('#resume-autofill-btn')) continue;
+      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') continue;
+      const cls = (typeof el.className === 'string') ? el.className : '';
+      if (/arrow|icon|caret|suffix|prefix|clear|close|remove/.test(cls)) continue;
+      const text = (el.textContent || '').trim();
+      if (text.length < 1 || text.length > 30) continue;
+      // leaf-ish: 无子元素，或所有子元素自身都无文本（只有图标/装饰等）
+      if (el.children.length > 0) {
+        const allEmpty = Array.from(el.children).every(c => !(c.textContent || '').trim());
+        if (!allEmpty) continue;
+      }
+      // 就近过滤：候选必须离触发输入框不太远（~600px 纵向 / ~400px 横向），
+      // 避免点到远距离的页面文本（lazy-load 内容、导航等非面板元素）
+      if (triggerRect) {
+        const cr = el.getBoundingClientRect();
+        if (cr.width <= 0 || cr.height <= 0) continue;
+        if (Math.abs(cr.top - (triggerRect.top + triggerRect.height / 2)) > 600) continue;
+        if (Math.abs(cr.left - (triggerRect.left + triggerRect.width / 2)) > 400) continue;
+      }
+      candidates.push(el);
+    }
+    return candidates;
+  }
+
   // 通用下拉框填充（Ant Design / Element / Arco / 任意自定义下拉；支持省/市级联逐级选择）
   async function fillGenericDropdown(el, value) {
     const v = String(value || '').trim();
@@ -830,13 +942,30 @@
 
     // 1. 记录打开前已可见的选项（属于其他已打开的面板），避免误点；
     //    只排除"打开前就可见"的，隐藏后由本次打开显示的面板选项不会被误排除
-    const optionSelectors = '[role="option"], [class*="option"], [class*="dropdown-item"], [class*="select-item"], [class*="menu-item"], li[class*="item"]';
+    const optionSelectors = [
+      '[role="option"]', '[class*="option"]', '[class*="dropdown-item"]',
+      '[class*="select-item"]', '[class*="menu-item"]', 'li[class*="item"]',
+      // 菜单容器内叶子节点（泛用兜底：Moka sd-Select-menu 裸 span 无 role/class）
+      '[class*="select"] [class*="menu"] > *:not([class*="arrow"]):not([class*="icon"])',
+      '[class*="dropdown"] [class*="menu"] > *:not([class*="arrow"]):not([class*="icon"])',
+      '[class*="menu"] > li', '[class*="menu"] > div[role="none"]'
+    ].join(',');
     const visibleBefore = new Set(Array.from(document.querySelectorAll(optionSelectors)).filter(isVisible));
 
     // 2. 点击打开下拉：类名优先（ant 是 selection、arco 是 select-view），
     //    再用 elementFromPoint 命中中央真正可点的元素——点外层容器可能不触发内部处理器
     let trigger = el.querySelector('[class*="selector"], [class*="selection"], [class*="select-view"], [class*="input"], [class*="trigger"]') || centerOf(el) || el;
     if (!trigger || typeof trigger.click !== 'function') trigger = el;   // SVG/非标准元素没有 click → 退回外层
+    // Moka 等 React 自定义下拉通过 onMouseDown 打开面板，仅 click() 不触发；
+    // dispatch mousedown 在 click 之前，对 ant/B站 无害（额外事件会被忽略）
+    if (trigger && typeof trigger.dispatchEvent === 'function') {
+      trigger.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    }
+    // 部分框架的 mousedown handler 挂在 INPUT 自身而非外层容器，且 trigger 可能
+    // 是 outer container 而非 INPUT → 若 el 是 INPUT 且与 trigger 不同，也对 el 派发 mousedown
+    if (el !== trigger && el.tagName === 'INPUT' && typeof el.dispatchEvent === 'function') {
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    }
     trigger.click();
     await sleep(350);
 
@@ -861,21 +990,59 @@
     let remaining = v;
     let clickedAny = false;
     for (let guard = 0; guard < 6 && remaining; guard++) {
-      const opts = Array.from(document.querySelectorAll(optionSelectors))
+      // 双源采集：类名选择器（传统） + 全文档树叶扫描（泛用，含 Moka 裸 span）
+      const classOpts = Array.from(document.querySelectorAll(optionSelectors))
         .filter(o => !visibleBefore.has(o))
-        .filter(isVisible);
+        .filter(isVisible)
+        .filter(o => {
+          const oc = (typeof o.className === 'string') ? o.className : '';
+          if (/arrow|icon|caret|clear|close|remove/.test(oc)) return false;
+          if ((o.textContent || '').trim().length === 0) return false;
+          if (o.contains(el) || el.contains(o)) return false;
+          return true;
+        });
+      const leafOpts = collectVisibleOptionCandidates(visibleBefore, trigger, el);
+      // 去重合并（按元素引用）
+      const seen = new Set(classOpts);
+      for (const lo of leafOpts) { if (!seen.has(lo)) { classOpts.push(lo); seen.add(lo); } }
+      const opts = classOpts;
+
       if (opts.length === 0) break;
 
       let best = null, bestLen = 0;
       for (const o of opts) {
         const len = matchDropdownOption(o.textContent, remaining);
-        if (len > bestLen) { bestLen = len; best = o; }
+        if (len === 0) continue;
+        const t = (o.textContent || '').trim();
+        const isExact = t === remaining;
+        if (!best) { best = o; bestLen = len; continue; }
+        if (len > bestLen) { best = o; bestLen = len; continue; }
+        if (len === bestLen) {
+          // 同分时：精确匹配优先；都是精确/都是包含时，文本短的优先（"男" < "男女"容器文本）
+          const curIsExact = (best.textContent || '').trim() === remaining;
+          if (isExact && !curIsExact) { best = o; continue; }
+          if (isExact === curIsExact && t.length < (best.textContent || '').trim().length) { best = o; }
+        }
       }
       if (!best || bestLen === 0) break;        // 本级无可匹配项
 
-      best.click();
+      // 收集候选点击链：裸叶子 → 逐级祖先（最多6层），优先含 option/item/label 关键字的中间层。
+      // Moka 的 React 点击处理器挂在 option-label-*/item 类中间容器上，不在裸 span 也不在最近3层祖先上
+      const clickChain = [best];
+      for (let p = best.parentElement, i = 0; p && p !== document.body && i < 6; i++, p = p.parentElement) {
+        const pc = (typeof p.className === 'string') ? p.className.trim() : '';
+        const tag = p.tagName.toLowerCase();
+        const isTarget = /option|item|label|cell|row|menu|common-item|select-item/.test(pc) ||
+                         tag === 'li' || tag === 'button' || p.getAttribute('role') === 'option';
+        if (isTarget) clickChain.push(p);
+      }
+      let clicked = false;
+      for (const cand of clickChain) {
+        clicked = await clickOptionWithRetryAsync(cand, el, remaining);
+        if (clicked) break;
+      }
+      if (!clicked) break;        // 选项点击未生效（值未变化）
       clickedAny = true;
-      await sleep(150);
 
       if (bestLen >= remaining.length) break;   // 值已全部选中
       // 消费本级后，跳过残留的区划后缀/分隔符："湖南省长沙市" 消费"湖南"后剩"省长沙市" → 清成"长沙市"
@@ -909,6 +1076,15 @@
     if (base && base === remaining) return remaining.length;
     if (remaining.startsWith(base)) return base.length;
     if (base.startsWith(remaining)) return remaining.length;
+    // 包含匹配兜底（最后一级）："硕士（统招）"↔"硕士"、"湖南长沙"↔"湖南省"
+    if (remaining.length >= 2 && t.length >= 2) {
+      // 先剥掉选项末尾的括号注解（（统招）/（全职）/...），避免干扰
+      const cleanT = t.replace(/[（(][^）)]*[）)]$/, '').trim();
+      if (cleanT && remaining.includes(cleanT)) return cleanT.length;
+      if (cleanT && cleanT.includes(remaining)) return remaining.length;
+      if (t.includes(remaining) && t.length <= remaining.length + 1) return remaining.length;
+      if (remaining.includes(t)) return t.length;
+    }
     return 0;
   }
 
@@ -929,6 +1105,12 @@
     if (ok) {
       // 已确认提交 → 用 Escape-first 可靠关闭面板（protect 的非破坏性关闭在 B 站不保证生效，
       // 残留面板会污染下一个日期字段的日历点选）
+      await closeOpenPanel(el, el, false);
+      return;
+    }
+    // 次要：泛用年月网格日期选择器（如 Moka 自研组件，面板含 "N年" + 月份网格）
+    const genericOk = await selectDateInGenericPicker(input, value, selector);
+    if (genericOk) {
       await closeOpenPanel(el, el, false);
       return;
     }
@@ -1088,15 +1270,108 @@
     return null;
   }
 
+  // ===== 泛用年月网格日期选择器（非 ant 自定义组件，如 Moka） =====
+  // 策略：打开面板 → 找到 "{year}年" 元素点选年份 → 找到中文月份（一月..十二月）点选 →
+  // 验证输入值年份正确。最多重试 3 次。
+
+  // 在输入框附近找任意可见面板（使用 PANEL_SELECTORS 泛用模式，不限于 ant calendar）
+  function findOpenGenericPanelNear(el) {
+    const r = el.getBoundingClientRect();
+    let best = null;
+    for (const node of document.querySelectorAll(PANEL_SELECTORS)) {
+      if (!isVisible(node)) continue;
+      if (node.contains(el)) continue;
+      const pr = node.getBoundingClientRect();
+      if (pr.width <= 0 || pr.height <= 0) continue;
+      if (pr.left < r.right + 450 && pr.right > r.left - 450 &&
+          pr.top >= r.top - 650 && pr.top <= r.bottom + 650) {
+        const dist = Math.abs(pr.top - r.bottom) + Math.abs(pr.left - r.left);
+        if (!best || dist < best._dist) { best = node; best._dist = dist; }
+      }
+    }
+    return best;
+  }
+
+  // 在面板内找文本精确匹配的可点击叶子节点（优先精确匹配，兜底包含匹配）
+  function findTextInPanel(panel, text) {
+    const all = panel.querySelectorAll('*');
+    let best = null;
+    for (const el of all) {
+      const t = (el.textContent || '').trim();
+      if (!t || t.length > 20) continue;
+      if (!isVisible(el)) continue;
+      if (t === text) return el;
+      if (!best && t.includes(text) && el.children.length === 0) best = el;
+    }
+    return best;
+  }
+
+  async function selectDateInGenericPicker(input, value, selector) {
+    const m = /^(\d{4})[-\/.](\d{1,2})(?:[-\/.](\d{1,2}))?/.exec(String(value || '').trim());
+    if (!m) return false;
+    const year = +m[1], month = +m[2];
+    const YEAR_MONTHS = ['', '一月','二月','三月','四月','五月','六月','七月','八月','九月','十月','十一月','十二月'];
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (selector) {
+        const fresh = findElement(selector);
+        if (fresh) input = fresh.tagName === 'INPUT' ? fresh : (fresh.querySelector('input') || fresh);
+      }
+
+      // 打开面板：click + focus，也尝试点 addon/picker 图标
+      input.click();
+      input.focus();
+      await sleep(400);
+      let panel = findOpenGenericPanelNear(input);
+      if (!panel) {
+        const addon = input.parentElement && input.parentElement.querySelector('[class*="picker"], [class*="calendar"], [class*="addon"]');
+        if (addon) { addon.click(); await sleep(400); }
+        panel = findOpenGenericPanelNear(input);
+      }
+      if (!panel) return false;
+
+      // 点选年份：找文本精确为 "{year}年" 的元素
+      const yearEl = findTextInPanel(panel, year + '年');
+      if (!yearEl) { await closeOpenPanel(input, input, false); await sleep(150); continue; }
+      yearEl.click();
+      await sleep(350);
+
+      // 年份点击后重查面板（可能面板内容已切换）
+      panel = findOpenGenericPanelNear(input);
+      if (!panel) { await closeOpenPanel(input, input, false); await sleep(150); continue; }
+
+      // 点选月份：先试中文名，再试数字
+      const targetMonth = YEAR_MONTHS[month] || '';
+      let monthEl = targetMonth ? findTextInPanel(panel, targetMonth) : null;
+      if (!monthEl) monthEl = findTextInPanel(panel, month + '月');
+      if (!monthEl) { await closeOpenPanel(input, input, false); await sleep(150); continue; }
+      monthEl.click();
+      await sleep(250);
+
+      // 验证输入值年份正确（Moka 填充后 input.value 会更新为 "1990-01" 之类）
+      const val = String(input.value || '').trim();
+      if (/^\d{4}/.test(val) && parseInt(val.slice(0, 4), 10) === year) return true;
+
+      // 失败则关面板重试
+      await closeOpenPanel(input, input, false);
+      await sleep(200);
+    }
+    return false;
+  }
+
   // ===== 面板收起（下拉/级联/日期共用） =====
   // 部分框架（尤其 B 站 ant-design-vue / bili-date）忽略 isTrusted=false 的合成事件，
   // 只发 document 级 mousedown/click 关不掉面板。因此：多层机制 + 确认重试。
   const PANEL_SELECTORS = [
     '[role="listbox"]', '[role="dialog"]',
     '[class*="dropdown-menu"]', '[class*="dropdown-content"]', '[class*="dropdown-list"]',
-    '[class*="menus"]', '[class*="menu-list"]', '[class*="popup"]',
-    '[class*="picker-panel"]', '[class*="calendar-panel"]', '[class*="calendar"]',
-    '[class*="panel"]', '[class*="cascader-menu"]', '[class*="option-list"]'
+    '[class*="dropdown"]',
+    '[class*="menus"]', '[class*="menu-list"]', '[class*="menu"]',
+    '[class*="popup"]', '[class*="select-menu"]',
+    '[class*="picker-panel"]', '[class*="calendar-panel"]', '[class*="calendar"]', '[class*="picker"]',
+    '[class*="panel"]', '[class*="cascader-menu"]', '[class*="option-list"]',
+    '[class*="overlay"]', '[class*="layer"]',
+    '[class*="select"] [class*="menu"]'
   ].join(',');
 
   // 字段附近是否仍有打开的面板（宽松判断，仅用于确认收起；误报无害）
@@ -1106,6 +1381,8 @@
     if (r.width === 0 || r.height === 0) return false;
     for (const node of document.querySelectorAll(PANEL_SELECTORS)) {
       if (!isVisible(node)) continue;
+      // 跳过包含触发元素自身的节点（避免把字段容器误判为打开的面板）
+      if (node.contains(el)) continue;
       const pr = node.getBoundingClientRect();
       const hOverlap = pr.left < r.right + 150 && pr.right > r.left - 150;
       const vNear = pr.top >= r.top - 120 && pr.top <= r.bottom + 600;
@@ -1233,6 +1510,8 @@
   let giveUpTimer = null;
 
   function tryShow() {
+    // 跳过极小 iframe（广告/跟踪/埋点），避免在无意义帧内创建按钮
+    if (window.innerWidth < 200 || window.innerHeight < 200) return false;
     if (document.getElementById('resume-autofill-btn')) return true;
     if (isResumePage()) {
       createFloatingButton();
