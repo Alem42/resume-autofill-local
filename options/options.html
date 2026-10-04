@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>个人信息 · 简历填写助手</title><link rel="stylesheet" href="../shared/ui.css"></head>
+<body><main>
+  <h1>我的个人信息</h1>
+  <p class="muted">资料保存在这台电脑的浏览器中。填完后点击保存，每次填写网页前都需要单独确认。</p>
+  <p class="notice">DeepSeek 只接收网页字段描述和资料项名称，个人资料的值由本机取出并填写。网页标签与占位符也会发送给 DeepSeek；请只对可信页面开启检测。</p>
+  <section class="card">
+    <h2>DeepSeek 设置</h2>
+    <p class="muted">接口固定为 https://api.deepseek.com/chat/completions，无法被导入文件替换。</p>
+    <div class="grid">
+      <label class="field">模型<select id="model"><option value="deepseek-flash">DeepSeek Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select></label>
+      <label class="field">API Key<input id="api-key" type="password" autocomplete="off" spellcheck="false" maxlength="512" placeholder="请输入你的 DeepSeek API Key"></label>
+    </div>
+    <p id="key-status" class="muted"></p>
+    <label class="check-row"><input id="remember-key" type="checkbox"><span>在本机记住 API Key<small class="value">默认只在本次浏览器会话中保存。勾选后会写入浏览器本地存储，未进行额外加密。</small></span></label>
+    <div class="actions"><button id="test-connection" type="button">保存后测试连接</button><button id="clear-key" class="danger" type="button">移除已保存的密钥</button></div>
+  </section>
+  <form id="profile-form" autocomplete="off"><div id="profile-sections"></div></form>
+  <section class="card">
+    <h2>本机备份</h2>
+    <p class="muted">JSON 只包含个人信息，不包含密钥或模型设置。备份文件含私人资料，请妥善保管。</p>
+    <div class="actions"><button id="export-profile" type="button">导出个人信息 JSON</button><button id="import-profile" type="button">导入个人信息 JSON</button><button id="clear-profile" class="danger" type="button">清空个人信息</button></div>
+    <input id="import-file" type="file" accept="application/json,.json" hidden>
+  </section>
+  <div class="sticky"><div class="actions"><button id="save-options" class="primary" type="button">保存个人信息与设置</button><span id="status" class="status" role="status" aria-live="polite"></span></div></div>
+  <script type="module" src="options.js"></script>
+</main></body></html>

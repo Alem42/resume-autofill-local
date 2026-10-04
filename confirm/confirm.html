@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>确认填写 · 简历填写助手</title><link rel="stylesheet" href="../shared/ui.css"></head>
+<body class="confirm"><main>
+  <h1>检测到简历表单</h1>
+  <p>是否允许填写这个页面？请核对地址，并选择本次允许使用的资料。</p>
+  <p id="target-site" class="site"></p>
+  <p class="notice">先确认资料范围，再预览具体字段。DeepSeek 只做字段匹配，不接收下面的资料值。你确认填写后，所选资料将出现在该网页中，网站可以读取或自动保存它们。</p>
+  <section id="selection" class="card" hidden>
+    <h2>本次允许填写的资料</h2>
+    <div class="actions"><button id="select-common" type="button">选中普通资料</button><button id="select-none" type="button">全部取消</button></div>
+    <div id="sources"></div>
+    <label class="check-row"><input id="overwrite" type="checkbox"><span>允许覆盖已有内容<small class="value">默认跳过已有值。先在网页上手动添加需要的经历条目。</small></span></label>
+    <div class="actions"><button id="match" class="primary" type="button">确认资料范围，匹配字段</button></div>
+  </section>
+  <section id="preview" class="card" hidden>
+    <h2>填写预览</h2>
+    <p class="muted">请检查对应关系，取消勾选不需要填写的字段。</p>
+    <div id="mappings"></div>
+    <div class="actions"><button id="apply" class="primary" type="button">确认填写所选字段</button></div>
+  </section>
+  <p id="status" class="status" role="status" aria-live="polite">正在载入…</p>
+  <div class="actions"><button id="cancel" type="button">取消并关闭本页检测</button></div>
+  <script type="module" src="confirm.js"></script>
+</main></body></html>

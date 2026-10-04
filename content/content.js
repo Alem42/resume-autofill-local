@@ -1,131 +1,39 @@
-// Content Script - 通用字段采集 + 智能填充 + 浮动按钮
-// 策略：行为驱动检测，不依赖特定 UI 框架类名
-
+// Injected into the top frame only after a manual action in the extension popup.
 (function () {
   'use strict';
+  if (globalThis.__resumeManualAgent) return;
+  globalThis.__resumeManualAgent = true;
+  let activeScanToken = null;
+  let running = false;
+  let prepared = false;
+  let allowOverwrite = false;
+  let observer = null;
+  let detectionTimer = null;
+  let debounceTimer = null;
+  const fieldRegistry = new Map();
+  const INPUT_TYPES = new Set(['text', 'email', 'tel', 'url', 'number', 'date', 'month', 'week', 'time', 'datetime-local']);
 
-  if (document.getElementById('resume-autofill-btn')) return;
-
-  let running = false;               // 重入保护：填充异步期间忽略重复点击
-
-  // ===== 浮动按钮（可拖拽） =====
-  function createFloatingButton() {
-    const btn = document.createElement('div');
-    btn.id = 'resume-autofill-btn';
-    btn.textContent = '自动填充';
-    document.body.appendChild(btn);
-
-    let isDragging = false, startX, startY, startLeft, startTop, hasMoved;
-
-    btn.addEventListener('mousedown', (e) => {
-      isDragging = true; hasMoved = false;
-      startX = e.clientX; startY = e.clientY;
-      const rect = btn.getBoundingClientRect();
-      startLeft = rect.left; startTop = rect.top;
-      btn.style.transition = 'none';
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!isDragging) return;
-      const dx = e.clientX - startX, dy = e.clientY - startY;
-      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) hasMoved = true;
-      btn.style.right = 'auto'; btn.style.bottom = 'auto';
-      btn.style.left = (startLeft + dx) + 'px';
-      btn.style.top = (startTop + dy) + 'px';
-    });
-    document.addEventListener('mouseup', () => {
-      if (isDragging && !hasMoved) handleClick();
-      isDragging = false;
-      btn.style.transition = 'all 0.2s ease';
-    });
-
-    return btn;
+  function eligibleElement(el) {
+    if (!el || !el.isConnected || el.ownerDocument !== document || el.disabled || !isVisible(el)) return false;
+    if (el.closest('[inert], [aria-hidden="true"], button, a[href], [role="button"]')) return false;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input' && !INPUT_TYPES.has((el.type || 'text').toLowerCase())) return false;
+    const inner = el.querySelector('input:not([type="hidden"])');
+    if (inner && (!INPUT_TYPES.has((inner.type || 'text').toLowerCase()) || inner.disabled)) return false;
+    const description = [el.name || '', el.id || '', getLabelText(el), getPlaceholder(el)].join(' ');
+    if (/password|passwd|captcha|verification|\botp\b|验证码|口令|密码|短信码|动态码/i.test(description)) return false;
+    return !isSearchLikeField(el);
   }
-
-  function updateButtonText(btn, text, className) {
-    btn.textContent = text;
-    btn.className = className || '';
+  function fieldHasValue(el) {
+    if (typeof el.value === 'string' && el.value.trim()) return true;
+    const inner = el.querySelector('input:not([type="hidden"]), textarea');
+    if (inner && inner.value.trim()) return true;
+    if (el.isContentEditable && el.textContent.trim()) return true;
+    const display = el.querySelector('[class*="display-value"], [class*="selection-item"], [class*="select-value"]');
+    return Boolean((el.getAttribute('aria-valuetext') || display?.textContent || '').trim());
   }
-
-  // ===== 点击处理 =====
-  async function handleClick() {
-    if (running) return;             // 上一轮尚未结束 → 忽略本次点击
-    running = true;
-    const btn = document.getElementById('resume-autofill-btn');
-    let ticker = null;
-
-    try {
-      // 阶段 1：读取简历数据（本地读取，很快）
-      updateButtonText(btn, '读取简历中...', 'loading');
-      const profile = await getProfile();
-
-      // 阶段 2：展开初始为空的"添加"区块 + 采集表单字段
-      updateButtonText(btn, '采集字段中...', 'loading');
-      await expandAddBlocks(profile);
-      const fields = collectFields();
-
-      if (fields.length === 0) {
-        updateButtonText(btn, '未找到表单', 'error');
-        setTimeout(() => updateButtonText(btn, '自动填充', ''), 2000);
-        return;
-      }
-
-      // 阶段 3：AI 识别（网络慢时显示已等待秒数，缓解等待焦虑）
-      updateButtonText(btn, '识别中...', 'loading');
-      let waitSec = 0;
-      ticker = setInterval(() => {
-        waitSec++;
-        updateButtonText(btn, `识别中... ${waitSec}s`, 'loading');
-      }, 1000);
-
-      const response = await new Promise(resolve => {
-        chrome.runtime.sendMessage({ type: 'FILL_FORM', fields, profile }, resp => {
-          if (chrome.runtime.lastError) {
-            resolve({ __commError: chrome.runtime.lastError.message });
-            return;
-          }
-          resolve(resp);
-        });
-      });
-
-      if (response && response.__commError) {
-        updateButtonText(btn, '通信失败', 'error');
-        console.error('[简历填充]', response.__commError);
-        setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
-        return;
-      }
-      if (!response) {
-        updateButtonText(btn, '无响应', 'error');
-        setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
-        return;
-      }
-      if (response.error) {
-        const errText = response.error.length > 30 ? response.error.slice(0, 28) + '...' : response.error;
-        updateButtonText(btn, errText, 'error');
-        console.error('[简历填充]', response.error);
-        setTimeout(() => updateButtonText(btn, '自动填充', ''), 5000);
-        return;
-      }
-
-      // 阶段 4：逐字段填充，显示进度
-      const mappings = response.mappings || [];
-      const count = await executeFill(mappings, (done, total) => {
-        updateButtonText(btn, `填充中 ${done}/${total}`, 'loading');
-      });
-      if (count === 0) {
-        updateButtonText(btn, '未匹配到可填充字段', 'error');
-        setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
-      } else {
-        updateButtonText(btn, `已填充 ${count}/${fields.length} 个字段`, '');
-      }
-    } catch (err) {
-      updateButtonText(btn, '出错了', 'error');
-      console.error('[简历填充]', err);
-      setTimeout(() => updateButtonText(btn, '自动填充', ''), 3000);
-    } finally {
-      if (ticker) clearInterval(ticker);
-      running = false;
-    }
+  function fingerprint(el) {
+    return [el.tagName, el.type || '', el.name || '', el.getAttribute('role') || '', getLabelText(el)].join('|');
   }
 
   // ===== 通用组件类型检测（行为驱动） =====
@@ -134,7 +42,7 @@
 
     // 1. contenteditable 元素
     if (el.isContentEditable && tag !== 'input' && tag !== 'textarea') return 'contenteditable';
-    if (el.getAttribute('role') === 'textbox') return 'contenteditable';
+    if (el.getAttribute('role') === 'textbox' && !['input', 'textarea'].includes(tag)) return 'contenteditable';
 
     // 2. 原生元素优先
     if (tag === 'select') return 'native-select';
@@ -228,7 +136,6 @@
       const type = (el.type || '').toLowerCase();
       if (['hidden', 'submit', 'button', 'image', 'file', 'password', 'checkbox', 'radio'].includes(type)) return;
       if (!isVisible(el)) return;
-      if (el.closest('#resume-autofill-btn')) return;
       push(el);
     });
 
@@ -242,7 +149,6 @@
     ];
     document.querySelectorAll(customSelectors.join(',')).forEach(el => {
       if (!isVisible(el)) return;
-      if (el.closest('#resume-autofill-btn')) return;
       // 如果内部的原生 input 已采集，跳过外层容器
       const innerInput = el.querySelector('input:not([type="hidden"]):not([type="submit"])');
       if (innerInput && seen.has(innerInput)) return;
@@ -263,6 +169,7 @@
 
   function collectFields() {
     const fields = [];
+    fieldRegistry.clear();
     const collected = new Set();
     for (const el of scanFieldElements()) {
       addField(el, collected, fields);
@@ -271,20 +178,16 @@
   }
 
   function addField(el, collected, fields) {
-    if (collected.has(el)) return;
+    if (collected.has(el) || !eligibleElement(el) || (!allowOverwrite && fieldHasValue(el)) || fields.length >= 120) return;
     collected.add(el);
-
-    const selector = generateSelector(el);
-    if (!selector) return;
 
     const componentType = detectComponentType(el);
     const field = {
-      selector, componentType,
+      id: 'F' + fields.length, componentType,
       tag: el.tagName.toLowerCase(),
       label: getLabelText(el),
       placeholder: getPlaceholder(el),
       name: el.name || el.getAttribute('name') || el.getAttribute('formcontrolname') || '',
-      id: el.id || '',
       contextText: getContextText(el),
       required: isRequired(el)
     };
@@ -305,7 +208,10 @@
     // 有 label/placeholder/name 的强信号字段一律保留。
     const hasStrong = field.label || field.placeholder || field.name;
     const hasOptions = field.options && field.options.length > 0;
-    if (hasStrong || (field.contextText && hasOptions)) fields.push(field);
+    if (hasStrong || (field.contextText && hasOptions)) {
+      fields.push(field);
+      fieldRegistry.set(field.id, { element: el, fingerprint: fingerprint(el), componentType });
+    }
   }
 
   // 通用可选项采集（只从与当前字段关联的下拉面板采集）
@@ -335,145 +241,6 @@
       if (texts.size > 0) return Array.from(texts);
     }
     return [];
-  }
-
-  // ===== 展开"添加"区块（工作/教育/项目等初始为空时） =====
-  // 添加控件可能是裸 div（如 B 站的 .bili-form-add），必须用 [class*="add"] 兜底
-  const ADD_WORDS = /添加|新增|增加|add|append|insert|\+/i;
-  const SECTION_WORDS = /教育|工作|实习|项目|经历|语言|学校|公司/;
-
-  function findAddButtons(max) {
-    const candidates = document.querySelectorAll('button, [role="button"], a, [class*="add"], [class*="plus"]');
-    const result = [];
-    for (const el of candidates) {
-      const text = (el.textContent || '').trim();
-      const aria = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '');
-      const combo = text + ' ' + aria;
-      if (!ADD_WORDS.test(combo)) continue;
-      // 区块词：按钮文本本身，或（长度受限的）父元素文本，避免误匹配大容器
-      let ctx = combo;
-      if (!SECTION_WORDS.test(ctx)) {
-        const parentText = (el.parentElement ? el.parentElement.textContent : '') || '';
-        if (parentText.length < 50) ctx += ' ' + parentText;
-      }
-      if (!SECTION_WORDS.test(ctx)) continue;
-      if (!isVisible(el)) continue;    // 布局读取放到最后，只对已命中的少数候选执行
-      result.push(el);
-      if (max && result.length >= max) break;
-    }
-    return result;
-  }
-
-  // 最近"像区块"的祖先（真实页命中 .bili-form-card-body 的 card）
-  function getSectionContainer(btn) {
-    let el = btn.parentElement;
-    for (let i = 0; i < 5 && el && el !== document.body; i++, el = el.parentElement) {
-      const cls = (typeof el.className === 'string') ? el.className : '';
-      if (/section|block|card|item|group/.test(cls)) return el;
-      const text = (el.textContent || '');
-      if (text.length < 200 && /教育经历|工作经历|项目经历|实习经历|语言能力|求职意向|自我描述/.test(text)) return el;
-    }
-    return btn.parentElement || btn;
-  }
-
-  // 简历某区块应有的条目数（数组取 length；语言等换行字符串按行计数）
-  function profileEntryCount(profile, key) {
-    if (!key || !profile) return 0;
-    const v = profile[key];
-    if (Array.isArray(v)) return v.length;
-    if (typeof v === 'string' && v.trim()) return v.split(/\r?\n/).map(s => s.trim()).filter(Boolean).length;
-    return 0;
-  }
-
-  // 区块内已渲染的经历块数：结构信号优先（块容器 class），标签频次兜底
-  function countBlocksInSection(section) {
-    const fields = section.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="password"]), select, textarea');
-    const visible = [];
-    for (const el of fields) if (isVisible(el)) visible.push(el);
-    if (visible.length === 0) return 0;
-
-    // 1) 结构信号：字段归到最近的"块容器"，只认含 >=2 个可见字段的容器，去重容器数即块数
-    const BLOCK_RE = /multiple|block|entry|record/i;
-    const containerCounts = new Map();
-    for (const el of visible) {
-      let a = el.parentElement;
-      for (let i = 0; i < 5 && a && a !== section && a !== document.body; i++, a = a.parentElement) {
-        const cls = (typeof a.className === 'string') ? a.className : '';
-        if (BLOCK_RE.test(cls)) {
-          containerCounts.set(a, (containerCounts.get(a) || 0) + 1);
-          break;
-        }
-      }
-    }
-    const multiFieldBlocks = Array.from(containerCounts.values()).filter(c => c >= 2);
-    if (multiFieldBlocks.length > 0) return multiFieldBlocks.length;
-
-    // 单个可见字段（如语言/技能的 textarea）：不是多块结构，按行数补块会凭空新建输入框 → 标记不可扩容
-    if (visible.length === 1) return -1;
-
-    // 2) 兜底：重复条目复用同一套标签 → 出现最多的标签次数 ≈ 块数
-    const freq = new Map();
-    for (const el of visible) {
-      const label = getLabelText(el);
-      if (!label) continue;
-      freq.set(label, (freq.get(label) || 0) + 1);
-    }
-    if (freq.size === 0) return 1;   // 标签不可读 → 保守认为已有 1 块
-    return Math.max(...freq.values());
-  }
-
-  // 在区块内重新查找"添加"按钮（每轮点击前重查，防框架重渲染替换节点）
-  function findAddButtonInSection(section) {
-    const candidates = section.querySelectorAll('button, [role="button"], a, [class*="add"], [class*="plus"]');
-    for (const el of candidates) {
-      const text = (el.textContent || '').trim();
-      const aria = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '');
-      if (!ADD_WORDS.test(text + ' ' + aria)) continue;
-      if (!isVisible(el)) continue;
-      return el;
-    }
-    return null;
-  }
-
-  // 添加按钮 → 简历区块类型；只给简历里确实有数据的区块点"添加"
-  function mapButtonToProfileKey(btn) {
-    const text = (btn.textContent || '') + ' ' + (btn.getAttribute('aria-label') || '');
-    if (/教育/.test(text)) return 'education';
-    if (/工作|实习/.test(text)) return 'work';
-    if (/项目/.test(text)) return 'projects';
-    if (/语言/.test(text)) return 'languages';
-    return null;
-  }
-
-  async function expandAddBlocks(profile) {
-    const clicked = new WeakSet();
-    let any = false;
-    for (const btn of findAddButtons()) {
-      const section = getSectionContainer(btn);
-      if (clicked.has(section)) continue;          // 同一区块只处理一次
-      const key = mapButtonToProfileKey(btn);
-      const want = profileEntryCount(profile, key);               // 简历条数（数组 length / 字符串按行数）
-      if (want <= 0) continue;                                    // 简历无此区块数据 → 不点
-      clicked.add(section);
-      const existing = countBlocksInSection(section);
-      if (existing < 0) continue;                                 // 单输入区块（textarea）不可扩容
-      const toAdd = Math.max(0, want - existing);                 // 页面已有块数的差额
-      if (toAdd === 0) continue;                                  // 已有块 ≥ 简历条数 → 不重复新建
-      any = true;
-      for (let i = 0; i < toAdd; i++) {
-        const addBtn = findAddButtonInSection(section) || btn;    // 每轮重查，防重渲染替换节点
-        if (!addBtn || !addBtn.isConnected || !isVisible(addBtn)) break;
-        addBtn.click();                                           // Vue 等框架同步渲染新块
-        await sleep(80);
-      }
-    }
-    if (!any) return;
-    // 等待新字段渲染（异步框架可能延迟），最多 ~3s
-    const before = scanFieldElements().length;
-    for (let i = 0; i < 30; i++) {
-      await sleep(100);
-      if (scanFieldElements().length > before) return;
-    }
   }
 
   // ===== 简历页面检测（按需显示按钮） =====
@@ -520,6 +287,7 @@
   function collectFieldsForDetection() {
     const descs = [];
     for (const el of scanFieldElements()) {
+      if (!eligibleElement(el)) continue;
       const desc = {
         label: getLabelText(el),
         placeholder: getPlaceholder(el),
@@ -540,8 +308,7 @@
 
     const usable = collectFieldsForDetection().filter(d => !d.isSearchLike);
     // 全是"添加"按钮的空表单（如初始为空的 B 站简历页）也是简历表单
-    const addSignal = findAddButtons(1).length > 0;
-    if (usable.length === 0 && !addSignal) return false;
+    if (usable.length === 0) return false;
 
     let fStrong = 0, fMedium = 0, fNeg = 0;
     for (const d of usable) {
@@ -553,26 +320,30 @@
 
     // 纯登录/搜索/评论页：即使有"邮箱/姓名"等中等信号也拦掉；
     // 但字段丰富的表单（中等信号≥3，如校园招聘的"register"登记页）或有"添加"区块应放行
-    if ((pageNeg > 0 || fNeg > 0) && urlStrong === 0 && fStrong === 0 && fMedium < 3 && !addSignal) return false;
+    if ((pageNeg > 0 || fNeg > 0) && urlStrong === 0 && fStrong === 0 && fMedium < 3) return false;
 
     // 主规则：字段信号足够（强≥1 或 中等≥2）；
     // 或 URL 是招聘页（job/apply/简历…）且字段至少有一个个人信息信号，避免职业博客正文页误显示
-    return addSignal || fStrong >= 1 || fMedium >= 2 || (urlStrong >= 1 && (fStrong >= 1 || fMedium >= 1));
+    return fStrong >= 1 || fMedium >= 2 || (urlStrong >= 1 && (fStrong >= 1 || fMedium >= 1));
   }
 
   // ===== 通用标签检测 =====
+  function readLabelText(label) {
+    const clone = label.cloneNode(true);
+    clone.querySelectorAll('input, select, textarea, [contenteditable], [role="textbox"], [role="combobox"], [class*="display-value"], [class*="selection-item"], [class*="select-value"], script, style')
+      .forEach(node => node.remove());
+    return clone.textContent.trim();
+  }
   function getLabelText(el) {
     // label for
     if (el.id) {
       const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      if (label) return label.textContent.trim();
+      if (label) return readLabelText(label);
     }
     // 包裹的 label
     const parentLabel = el.closest('label');
     if (parentLabel) {
-      const clone = parentLabel.cloneNode(true);
-      clone.querySelectorAll('input, select, textarea').forEach(e => e.remove());
-      const text = clone.textContent.trim();
+      const text = readLabelText(parentLabel);
       if (text) return text;
     }
     // 通用：form-item / form-group 中的 label。
@@ -582,7 +353,7 @@
     while (formItem && formItem !== document.body) {
       const label = formItem.querySelector('[class*="label"], label');
       if (label) {
-        const text = label.textContent.trim().replace(/[：:*：*\s?]+$/, '');
+        const text = readLabelText(label).replace(/[：:*：*\s?]+$/, '');
         if (text) return text;
       }
       formItem = formItem.parentElement && formItem.parentElement.closest('[class*="form-item"], [class*="form-group"], [class*="field-item"], [class*="form-row"]');
@@ -616,71 +387,7 @@
     return false;
   }
 
-  function getContextText(el) {
-    let prev = el.previousElementSibling;
-    if (prev && !['INPUT', 'SELECT', 'TEXTAREA'].includes(prev.tagName)) {
-      const text = prev.textContent.trim();
-      if (text && text.length < 100) return text;
-    }
-    const parent = el.parentElement;
-    if (parent) {
-      const clone = parent.cloneNode(true);
-      clone.querySelectorAll('input, select, textarea, svg, style, script').forEach(e => e.remove());
-      const text = clone.textContent.trim().replace(/\s+/g, ' ');
-      if (text && text.length < 150) return text;
-    }
-    let ancestor = el.parentElement?.parentElement;
-    if (ancestor) {
-      const clone = ancestor.cloneNode(true);
-      clone.querySelectorAll('input, select, textarea, svg, style, script').forEach(e => e.remove());
-      const text = clone.textContent.trim().replace(/\s+/g, ' ');
-      if (text && text.length < 150) return text;
-    }
-    return '';
-  }
-
-  // ===== 选择器生成 =====
-  function generateSelector(el) {
-    if (el.id) return `#${CSS.escape(el.id)}`;
-
-    // name 快捷路径仅在页面唯一匹配时使用：同名重复字段（多区块表单）会被
-    // document.querySelector 统一命中第一个元素 → 后续条目的值写错位置。不唯一时
-    // 回退到带 nth-of-type 的完整路径（nth-of-type 按位置定位，天然唯一）
-    if (el.name) {
-      const sel = `${el.tagName.toLowerCase()}[name="${CSS.escape(el.name)}"]`;
-      try {
-        if (document.querySelectorAll(sel).length <= 1) return sel;
-      } catch {
-        return sel;
-      }
-    }
-
-    const path = [];
-    let current = el;
-    while (current && current !== document.body) {
-      let sel = current.tagName.toLowerCase();
-      if (current.id) {
-        path.unshift(`#${CSS.escape(current.id)}`);
-        break;
-      }
-      // 用有意义的 class 辅助定位
-      if (current.className && typeof current.className === 'string') {
-        const useful = current.className.split(/\s+/).find(c =>
-          c.startsWith('ant-') || c.startsWith('el-') || c.startsWith('arco-') ||
-          c.startsWith('t-') || c.startsWith('is-') || c.startsWith('mui-')
-        );
-        if (useful) sel += `.${useful}`;
-      }
-      const parent = current.parentElement;
-      if (parent) {
-        const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
-        if (siblings.length > 1) sel += `:nth-of-type(${siblings.indexOf(current) + 1})`;
-      }
-      path.unshift(sel);
-      current = current.parentElement;
-    }
-    return path.join(' > ');
-  }
+  function getContextText() { return ''; }
 
   // 日期值 → 可比较数字（2026-06 → 202606），用于按值倒序排日期字段
   function dateSortKey(v) {
@@ -693,6 +400,7 @@
   async function executeFill(mappings, onProgress) {
     let count = 0;
     const total = mappings.length;
+    const batchToken = activeScanToken;
 
     // 日期对（起止时间）先填结束、后填开始：B 站校验"起始时间不能晚于结束时间"，
     // 页面上旧结束时间早于新开始时，先填开始会被拒、回退到旧值（实测 2026-06→2025-06）。
@@ -707,15 +415,16 @@
     const ordered = rest.concat(dates.sort((a, b) => dateSortKey(b.value) - dateSortKey(a.value)));
 
     for (let i = 0; i < ordered.length; i++) {
+      if (!activeScanToken || activeScanToken !== batchToken) throw new Error('填写已停止');
       const mapping = ordered[i];
       // 防御：LLM 返回空值时跳过，避免填充空字段
       if (mapping.value === null || mapping.value === undefined || mapping.value === '') {
         if (onProgress) onProgress(i + 1, total);
         continue;
       }
-      const el = findElement(mapping.selector);
-      if (!el) {
-        console.log('[简历填充] 未找到元素:', mapping.selector, mapping.componentType, '值:', mapping.value);
+      const el = findElement(mapping.fieldId);
+      if (!el || (!allowOverwrite && fieldHasValue(el))) {
+
         if (onProgress) onProgress(i + 1, total);
         continue;
       }
@@ -724,52 +433,29 @@
       const componentType = mapping.componentType || detectComponentType(el);
 
       try {
-        await fillByType(el, value, componentType, mapping.selector);
-        highlightField(el);
-        count++;
-      } catch (e) {
-        console.warn('[简历填充] 填充失败:', mapping.selector, componentType, '值:', value, e);
+        const filled = await fillByType(el, value, componentType, mapping.fieldId);
+        if (filled) { highlightField(el); count++; }
+      } catch {
+        // A component that refuses a synthetic event is counted as skipped.
       }
       if (onProgress) onProgress(i + 1, total);
       await sleep(150);
     }
 
-    // 兜底清理：关闭可能残留的下拉/日期面板
-    await closeAllPanels();
-    return count;
+    return { filled: count, skipped: total - count };
   }
 
-  async function fillByType(el, value, componentType, selector) {
+  async function fillByType(el, value, componentType, fieldId) {
     switch (componentType) {
-      case 'native-input':
-      case 'wrapper-input':
-        fillNativeInput(el, value);
-        break;
-      case 'native-select':
-        fillNativeSelect(el, value);
-        break;
-      case 'contenteditable':
-        fillContentEditable(el, value);
-        break;
-      case 'custom-dropdown':
-        await fillGenericDropdown(el, value);
-        break;
-      case 'custom-interactive':
-        // 只读但无法预先判类型：先当自定义下拉尝试（最常见），失败则当日期
-        await fillGenericDropdown(el, value);
-        break;
-      case 'custom-datepicker':
-        await fillGenericDatepicker(el, value, selector);
-        break;
-      default:
-        // 兜底：尝试当原生 input 填充
-        if (el.tagName.toLowerCase() === 'input' || el.tagName.toLowerCase() === 'textarea') {
-          fillNativeInput(el, value);
-        } else {
-          // 最后尝试：找到内部 input 填充
-          const inner = el.querySelector('input:not([type="hidden"])');
-          if (inner) fillNativeInput(inner, value);
-        }
+      case 'native-input': case 'wrapper-input': {
+        const input = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ? el : el.querySelector('input:not([type="hidden"]), textarea');
+        return input && eligibleElement(input) ? fillNativeInput(input, value) : false;
+      }
+      case 'native-select': return fillNativeSelect(el, value);
+      case 'contenteditable': return fillContentEditable(el, value);
+      case 'custom-dropdown': case 'custom-interactive': return fillGenericDropdown(el, value);
+      case 'custom-datepicker': return fillGenericDatepicker(el, value, fieldId);
+      default: return false;
     }
   }
 
@@ -786,17 +472,18 @@
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     el.dispatchEvent(new Event('blur', { bubbles: true }));
+    return el.value === v;
   }
 
   function fillNativeSelect(el, value) {
     const v = String(value || '').trim();
-    if (!v) return;
+    if (!v) return false;
     // 1) 精确匹配
     for (const opt of el.options) {
       if (opt.textContent.trim() === v || opt.value === v) {
         el.value = opt.value;
         el.dispatchEvent(new Event('change', { bubbles: true }));
-        return;
+        return el.value === opt.value;
       }
     }
     // 2) 包含匹配（"北京" ↔ "北京市"）
@@ -805,7 +492,7 @@
       if (t && (t.includes(v) || v.includes(t))) {
         el.value = opt.value;
         el.dispatchEvent(new Event('change', { bubbles: true }));
-        return;
+        return el.value === opt.value;
       }
     }
     // 3) 地点模糊匹配（籍贯"湖南长沙" ↔ 选项"湖南省"，去省/市后缀取最接近）
@@ -817,7 +504,9 @@
     if (best) {
       el.value = best.value;
       el.dispatchEvent(new Event('change', { bubbles: true }));
+      return el.value === best.value;
     }
+    return false;
   }
 
   function fillContentEditable(el, value) {
@@ -826,6 +515,7 @@
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     el.blur();
+    return el.textContent === value;
   }
 
   // 读取自定义下拉字段当前已选中的显示值（如 Moka .sd-Input-display-value-* span）
@@ -850,7 +540,7 @@
   async function clickOptionWithRetryAsync(el, input, targetText) {
     const beforeValue = input ? String(input.value || '').trim() : '';
     const beforeDisplay = getDropdownDisplayValue(input);
-    for (let target = el, i = 0; i < 4 && target && target !== document.body; i++, target = target.parentElement) {
+    for (let target = el, i = 0; i < 4 && target && target !== document.body && target.closest(DROPDOWN_PANELS) && safeOption(target); i++, target = target.parentElement) {
       if (typeof target.click !== 'function') continue;
       target.click();
       await sleep(250);
@@ -862,36 +552,23 @@
     return false;
   }
 
-  // 全文档扫描：在面板打开后，收集所有"新出现"的可见文本叶子节点作为候选选项
-  // 不依赖 option/role/class 名，适用于 CSS Modules / hash 类名的自定义组件库
+  // Candidates are restricted to visible nearby dropdown panels.
+  const DROPDOWN_PANELS = '[role="listbox"], [role="tree"], .ant-select-dropdown, .ant-cascader-menus, .el-select-dropdown, [class*="Select-menu"], [class*="select-menu"], [class*="dropdown-menu"], [class*="cascader-menu"]';
+  function safeOption(el) {
+    return !el.closest('a[href], button[type="submit"], input, form [role="button"]') && el !== document.body;
+  }
   function collectVisibleOptionCandidates(excludeSet, triggerEl, fieldEl) {
     const candidates = [];
-    const triggerRect = triggerEl ? triggerEl.getBoundingClientRect() : null;
-    for (const el of document.querySelectorAll('*')) {
-      if (excludeSet.has(el)) continue;
-      if (!isVisible(el)) continue;
-      if (el.contains(triggerEl)) continue;
-      if (fieldEl && fieldEl.contains(el)) continue;
-      if (el.closest('#resume-autofill-btn')) continue;
-      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') continue;
-      const cls = (typeof el.className === 'string') ? el.className : '';
-      if (/arrow|icon|caret|suffix|prefix|clear|close|remove/.test(cls)) continue;
-      const text = (el.textContent || '').trim();
-      if (text.length < 1 || text.length > 30) continue;
-      // leaf-ish: 无子元素，或所有子元素自身都无文本（只有图标/装饰等）
-      if (el.children.length > 0) {
-        const allEmpty = Array.from(el.children).every(c => !(c.textContent || '').trim());
-        if (!allEmpty) continue;
+    const r = triggerEl.getBoundingClientRect();
+    for (const panel of document.querySelectorAll(DROPDOWN_PANELS)) {
+      if (!isVisible(panel) || panel.contains(fieldEl)) continue;
+      const pr = panel.getBoundingClientRect();
+      if (Math.abs(pr.top - r.bottom) > 600 || Math.abs(pr.left - r.left) > 400) continue;
+      for (const el of panel.querySelectorAll('*')) {
+        if (excludeSet.has(el) || !safeOption(el) || !isVisible(el) || el.children.length) continue;
+        const text = (el.textContent || '').trim();
+        if (text && text.length <= 100) candidates.push(el);
       }
-      // 就近过滤：候选必须离触发输入框不太远（~600px 纵向 / ~400px 横向），
-      // 避免点到远距离的页面文本（lazy-load 内容、导航等非面板元素）
-      if (triggerRect) {
-        const cr = el.getBoundingClientRect();
-        if (cr.width <= 0 || cr.height <= 0) continue;
-        if (Math.abs(cr.top - (triggerRect.top + triggerRect.height / 2)) > 600) continue;
-        if (Math.abs(cr.left - (triggerRect.left + triggerRect.width / 2)) > 400) continue;
-      }
-      candidates.push(el);
     }
     return candidates;
   }
@@ -912,9 +589,8 @@
     ].join(',');
     const visibleBefore = new Set(Array.from(document.querySelectorAll(optionSelectors)).filter(isVisible));
 
-    // 2. 点击打开下拉：类名优先（ant 是 selection、arco 是 select-view），
-    //    再用 elementFromPoint 命中中央真正可点的元素——点外层容器可能不触发内部处理器
-    let trigger = el.querySelector('[class*="selector"], [class*="selection"], [class*="select-view"], [class*="input"], [class*="trigger"]') || centerOf(el) || el;
+    // Open only the approved field or its own trigger element.
+    let trigger = el.querySelector('[class*="selector"], [class*="selection"], [class*="select-view"], [class*="input"], [class*="trigger"]') || el;
     if (!trigger || typeof trigger.click !== 'function') trigger = el;   // SVG/非标准元素没有 click → 退回外层
     // Moka 等 React 自定义下拉通过 onMouseDown 打开面板，仅 click() 不触发；
     // dispatch mousedown 在 click 之前，对 ant/B站 无害（额外事件会被忽略）
@@ -949,11 +625,13 @@
     // 4. 逐级匹配：整值/片段精确优先，省→市逐级消费（级联选择器）；最多 6 级防死循环
     let remaining = v;
     let clickedAny = false;
+    let matchedAll = false;
     for (let guard = 0; guard < 6 && remaining; guard++) {
       // 双源采集：类名选择器（传统） + 全文档树叶扫描（泛用，含 Moka 裸 span）
       const classOpts = Array.from(document.querySelectorAll(optionSelectors))
         .filter(o => !visibleBefore.has(o))
         .filter(isVisible)
+        .filter(o => safeOption(o) && o.closest(DROPDOWN_PANELS))
         .filter(o => {
           const oc = (typeof o.className === 'string') ? o.className : '';
           if (/arrow|icon|caret|clear|close|remove/.test(oc)) return false;
@@ -965,7 +643,8 @@
       // 去重合并（按元素引用）
       const seen = new Set(classOpts);
       for (const lo of leafOpts) { if (!seen.has(lo)) { classOpts.push(lo); seen.add(lo); } }
-      const opts = classOpts;
+      const nearby = new Set(leafOpts);
+      const opts = classOpts.filter(o => nearby.has(o) || leafOpts.some(leaf => o.contains(leaf)));
 
       if (opts.length === 0) break;
 
@@ -989,12 +668,12 @@
       // 收集候选点击链：裸叶子 → 逐级祖先（最多6层），优先含 option/item/label 关键字的中间层。
       // Moka 的 React 点击处理器挂在 option-label-*/item 类中间容器上，不在裸 span 也不在最近3层祖先上
       const clickChain = [best];
-      for (let p = best.parentElement, i = 0; p && p !== document.body && i < 6; i++, p = p.parentElement) {
+      for (let p = best.parentElement, i = 0; p && p !== document.body && p.closest(DROPDOWN_PANELS) && i < 6; i++, p = p.parentElement) {
         const pc = (typeof p.className === 'string') ? p.className.trim() : '';
         const tag = p.tagName.toLowerCase();
         const isTarget = /option|item|label|cell|row|menu|common-item|select-item/.test(pc) ||
                          tag === 'li' || tag === 'button' || p.getAttribute('role') === 'option';
-        if (isTarget) clickChain.push(p);
+        if (isTarget && safeOption(p)) clickChain.push(p);
       }
       let clicked = false;
       for (const cand of clickChain) {
@@ -1004,7 +683,7 @@
       if (!clicked) break;        // 选项点击未生效（值未变化）
       clickedAny = true;
 
-      if (bestLen >= remaining.length) break;   // 值已全部选中
+      if (bestLen >= remaining.length) { matchedAll = true; break; }   // 值已全部选中
       // 消费本级后，跳过残留的区划后缀/分隔符："湖南省长沙市" 消费"湖南"后剩"省长沙市" → 清成"长沙市"
       remaining = remaining.slice(bestLen).replace(/^[省市自治州盟县区\/、\s，,]+/, '');
       await sleep(200);                         // 等下一级渲染
@@ -1014,6 +693,7 @@
     // 用多层机制（Escape/blur/文档 mousedown/body click）+ 检测重试，确认面板消失
     if (clickedAny) await sleep(120);   // 等框架处理完选中事件
     await closeOpenPanel(el, trigger);
+    return clickedAny && matchedAll;
   }
 
   // 地点类值只取"省"段用于搜索（"湖南长沙"/"湖南省" → "湖南"），其余值原样返回
@@ -1048,15 +728,13 @@
     return 0;
   }
 
-  // 取元素中心的真实可点元素（部分框架的点击处理器在内部子元素上，点外层容器不生效）
-  function centerOf(el) {
-    const r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return null;
-    const t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-    return t && (t === el || el.contains(t)) ? t : null;
+  // 通用日期选择器填充
+  function matchesDate(actual, expected) {
+    const a = String(actual || '').match(/^(\d{4})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?/);
+    const b = String(expected || '').match(/^(\d{4})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?/);
+    return Boolean(a && b && +a[1] === +b[1] && +a[2] === +b[2] && (!b[3] || +a[3] === +b[3]));
   }
 
-  // 通用日期选择器填充
   async function fillGenericDatepicker(el, value, selector) {
     const input = el.tagName === 'INPUT' ? el : (el.querySelector('input') || el);
     // 优先：ant-design-vue 日历点选。readonly + controlled 的 DatePicker 直接 setter 赋值 + Enter
@@ -1066,13 +744,13 @@
       // 已确认提交 → 用 Escape-first 可靠关闭面板（protect 的非破坏性关闭在 B 站不保证生效，
       // 残留面板会污染下一个日期字段的日历点选）
       await closeOpenPanel(el, el, false);
-      return;
+      return matchesDate(input.value, value);
     }
     // 次要：泛用年月网格日期选择器（如 Moka 自研组件，面板含 "N年" + 月份网格）
     const genericOk = await selectDateInGenericPicker(input, value, selector);
     if (genericOk) {
       await closeOpenPanel(el, el, false);
-      return;
+      return matchesDate(input.value, value);
     }
     // 兜底：先可靠关掉面板，再赋值 + Enter（ant readonly 上多不生效，但非 ant 控件可用）
     await closeOpenPanel(el, el, false);
@@ -1081,10 +759,11 @@
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     await sleep(120);
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+    // No synthetic Enter: completion must never submit the page.
     await sleep(120);
     input.blur();
     await closeOpenPanel(el, el, true);
+    return matchesDate(input.value, value);
   }
 
   // ===== ant-design-vue DatePicker 日历点选 =====
@@ -1114,7 +793,7 @@
         // 年份不符则当失败重试（第二次面板已热，通常能对上）
         const val = String(input.value || '').trim();
         if (/^\d{4}/.test(val) && parseInt(val.slice(0, 4), 10) === year) return true;
-        console.warn('[简历填充] 日期年份不符，重试:', value, '→', input.value);
+
       } else if (r === false && !isAnt) {
         return false;   // 非 ant，重试无意义
       }
@@ -1206,22 +885,23 @@
     return true;
   }
 
-  // 打开中的 ant 日历面板（portal 在 body 下）。
-  // 优先取紧邻输入框的；找不到则退回任意可见面板——面板可能开在输入框上方
-  // （字段在视口底部时朝上弹出），严格按位置找会漏。忽略 opacity（过渡中会为 0）。
+  // Only consider calendar panels near the approved input, never an arbitrary panel.
   function findOpenCalendarNear(el) {
     const r = el.getBoundingClientRect();
-    let anyVisible = null;
+    let best = null;
+    let distance = Infinity;
     for (const node of document.querySelectorAll('.ant-calendar-picker-panel, .ant-calendar')) {
       const s = getComputedStyle(node);
       if (s.display === 'none' || s.visibility === 'hidden') continue;
       const pr = node.getBoundingClientRect();
       if (pr.width <= 0 || pr.height <= 0) continue;
-      if (!anyVisible) anyVisible = node;
       if (pr.left < r.right + 400 && pr.right > r.left - 400 &&
-          pr.top >= r.top - 400 && pr.top <= r.bottom + 900) return node;
+          pr.top >= r.top - 400 && pr.top <= r.bottom + 600) {
+        const current = Math.abs(pr.top - r.bottom) + Math.abs(pr.left - r.left);
+        if (current < distance) { best = node; distance = current; }
+      }
     }
-    return anyVisible;
+    return best;
   }
 
   function findYearCell(panel, year) {
@@ -1322,17 +1002,7 @@
   // ===== 面板收起（下拉/级联/日期共用） =====
   // 部分框架（尤其 B 站 ant-design-vue / bili-date）忽略 isTrusted=false 的合成事件，
   // 只发 document 级 mousedown/click 关不掉面板。因此：多层机制 + 确认重试。
-  const PANEL_SELECTORS = [
-    '[role="listbox"]', '[role="dialog"]',
-    '[class*="dropdown-menu"]', '[class*="dropdown-content"]', '[class*="dropdown-list"]',
-    '[class*="dropdown"]',
-    '[class*="menus"]', '[class*="menu-list"]', '[class*="menu"]',
-    '[class*="popup"]', '[class*="select-menu"]',
-    '[class*="picker-panel"]', '[class*="calendar-panel"]', '[class*="calendar"]', '[class*="picker"]',
-    '[class*="panel"]', '[class*="cascader-menu"]', '[class*="option-list"]',
-    '[class*="overlay"]', '[class*="layer"]',
-    '[class*="select"] [class*="menu"]'
-  ].join(',');
+  const PANEL_SELECTORS = DROPDOWN_PANELS + ', .ant-calendar-picker-panel, .ant-calendar, [class*="calendar-panel"], [class*="datepicker-panel"], [class*="picker-panel"], [class*="date-picker"]';
 
   // 字段附近是否仍有打开的面板（宽松判断，仅用于确认收起；误报无害）
   function isPanelOpenNear(el) {
@@ -1354,8 +1024,7 @@
   // 发一轮收起事件。
   // 关键：多数框架（ant Select/DatePicker、bili-date）把 Escape 监听挂在输入框上，
   // 对输入框本身派发 Escape 不受 isTrusted 限制、也无需元素在焦点上。
-  // withEscape=false 用于日期选择器首轮：Escape 会取消"Enter 刚确认的日期"，
-  // 所以先只发非破坏性关闭（blur + 文档 mousedown/click），面板仍开着才升级 Escape
+  // All cleanup events target the approved field itself.
   function fireCloseEvents(el, trigger, withEscape) {
     // el/trigger 本身就是输入框时（日期选择器字段），直接用其作为 Escape/blur 目标——
     // 否则 querySelector('input') 返回 null，Escape 打不到输入框，面板关不掉（B 站实测）
@@ -1366,18 +1035,8 @@
                   (el && el.querySelector ? el.querySelector('input') : null);
     if (withEscape) {
       if (inner) inner.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
-      const act = document.activeElement;
-      if (act && act !== document.body && typeof act.blur === 'function') {
-        act.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
-      }
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
     }
-    const act = document.activeElement;
-    if (act && act !== document.body && typeof act.blur === 'function') act.blur();
-    if (inner && inner !== document.activeElement) inner.blur();
-    document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    document.body.click();
+    if (inner && typeof inner.blur === 'function') inner.blur();
   }
 
   // 主动收起：下拉/级联直接命中 Escape（B 站 ant 忽略文档级事件，实测有效）；
@@ -1391,14 +1050,6 @@
     }
   }
 
-  // 兜底：填充结束后清理任何残留面板
-  async function closeAllPanels() {
-    for (let i = 0; i < 2; i++) {
-      fireCloseEvents(null, null, i > 0);
-      await sleep(100);
-    }
-  }
-
   // ===== 高亮 =====
   function highlightField(el) {
     const target = el.closest('[class*="select"], [class*="input"], [class*="picker"], [class*="field"]') || el;
@@ -1409,96 +1060,92 @@
   }
 
   // ===== 工具函数 =====
-  function findElement(selector) {
-    try { return document.querySelector(selector); } catch { return null; }
+  function findElement(fieldId) {
+    const record = fieldRegistry.get(fieldId);
+    return record && eligibleElement(record.element) && fingerprint(record.element) === record.fingerprint ? record.element : null;
   }
-  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms)).then(() => {
+      if (!activeScanToken) throw new Error('填写已停止');
+    });
+  }
   function isVisible(el) {
     const s = window.getComputedStyle(el);
     if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+      const parentStyle = window.getComputedStyle(parent);
+      if (parentStyle.display === 'none' || parentStyle.visibility === 'hidden' || parentStyle.opacity === '0') return false;
+    }
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   }
 
-  function getProfile() {
-    return new Promise(resolve => {
-      chrome.storage.local.get(null, result => {
-        resolve({
-          basic: result.basic || {},
-          education: result.education || [],
-          work: result.work || [],
-          projects: result.projects || [],
-          languages: result.languages || '',
-          certificates: result.certificates || '',
-          skills: result.skills || '',
-          jobIntention: result.jobIntention || {},
-          selfEvaluation: result.selfEvaluation || ''
-        });
-      });
-    });
+  function stopDetection() {
+    if (observer) observer.disconnect();
+    observer = null;
+    clearTimeout(detectionTimer);
+    clearTimeout(debounceTimer);
   }
-
-  // ===== 按需显示：检测 + SPA 复查 =====
-  function debounce(fn, delay) {
-    let timer = null;
-    const wrapped = () => {
-      clearTimeout(timer);
-      timer = setTimeout(fn, delay);
+  function stopAll() {
+    activeScanToken = null;
+    prepared = false;
+    fieldRegistry.clear();
+    stopDetection();
+  }
+  function startDetection(token) {
+    stopAll();
+    activeScanToken = token;
+    let notified = false;
+    const check = () => {
+      if (!activeScanToken || notified || !isResumePage()) return;
+      notified = true;
+      stopDetection();
+      void chrome.runtime.sendMessage({ type: 'FORM_DETECTED', scanToken: token }).catch(() => stopAll());
     };
-    wrapped.cancel = () => clearTimeout(timer);
-    return wrapped;
+    observer = new MutationObserver(() => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(check, 500);
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'disabled'] });
+    detectionTimer = setTimeout(() => {
+      stopAll();
+      void chrome.runtime.sendMessage({ type: 'SCAN_TIMEOUT', scanToken: token }).catch(() => {});
+    }, 60000);
+    check();
   }
 
-  let observer = null;
-  let debouncedCheck = null;
-  let giveUpTimer = null;
-
-  function tryShow() {
-    // 跳过极小 iframe（广告/跟踪/埋点），避免在无意义帧内创建按钮
-    if (window.innerWidth < 200 || window.innerHeight < 200) return false;
-    if (document.getElementById('resume-autofill-btn')) return true;
-    if (isResumePage()) {
-      createFloatingButton();
-      teardown();
+  // No DOM click listener, postMessage bridge, storage access or automatic startup.
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (sender.id !== chrome.runtime.id || sender.tab ||
+        (sender.url && sender.url !== chrome.runtime.getURL('background/background.js'))) return false;
+    if (message.type === 'START_SCAN') {
+      if (typeof message.scanToken !== 'string' || message.scanToken.length > 100 || running) { sendResponse({ error: '检测状态无效' }); return false; }
+      startDetection(message.scanToken);
+      sendResponse({ started: true });
+      return false;
+    }
+    if (!activeScanToken || message.scanToken !== activeScanToken) { sendResponse({ error: '本页检测未开启或已取消' }); return false; }
+    if (message.type === 'STOP_SCAN') { stopAll(); sendResponse({ stopped: true }); return false; }
+    if (message.type === 'PREPARE_FIELDS') {
+      if (running) { sendResponse({ error: '正在填写' }); return false; }
+      allowOverwrite = message.overwrite === true;
+      const fields = collectFields();
+      prepared = true;
+      sendResponse({ fields: fields.map(({ id, label, placeholder, name, componentType }) => ({ id, label, placeholder, name, componentType })) });
+      return false;
+    }
+    if (message.type === 'APPLY_FIELDS') {
+      if (running || !prepared || !Array.isArray(message.mappings) || message.mappings.length > 120 ||
+          message.mappings.some(m => !fieldRegistry.has(m.fieldId) || typeof m.value !== 'string' || m.value.length > 20000 || fieldRegistry.get(m.fieldId).componentType !== m.componentType)) {
+        sendResponse({ error: '填写预览无效，请重新检测' }); return false;
+      }
+      running = true;
+      prepared = false;
+      allowOverwrite = message.overwrite === true;
+      executeFill(message.mappings).then(sendResponse).catch(() => sendResponse({ error: '填写中断，请检查已填写字段' })).finally(() => { running = false; stopAll(); });
       return true;
     }
     return false;
-  }
-
-  function onMutations() { debouncedCheck(); }
-
-  function onRouteChange() {
-    debouncedCheck.cancel();
-    tryShow();
-  }
-
-  function armObserver() {
-    teardown();
-    debouncedCheck = debounce(tryShow, 1200);
-    observer = new MutationObserver(onMutations);
-    // 只监听子节点增删，不监听属性：React/Vue 频繁改 class/style 会触发大量属性变更，
-    // 导致非表单页面在 60 秒内反复做全页字段扫描（布局读取开销大）
-    observer.observe(document.documentElement, { childList: true, subtree: true });
-    window.addEventListener('popstate', onRouteChange);
-    window.addEventListener('hashchange', onRouteChange);
-    // 60 秒内未识别则停止观察，避免巨型页面无限扫描
-    giveUpTimer = setTimeout(() => {
-      if (observer) { observer.disconnect(); observer = null; }
-    }, 60000);
-  }
-
-  function teardown() {
-    if (observer) { observer.disconnect(); observer = null; }
-    if (debouncedCheck) debouncedCheck.cancel();
-    if (giveUpTimer) clearTimeout(giveUpTimer);
-    window.removeEventListener('popstate', onRouteChange);
-    window.removeEventListener('hashchange', onRouteChange);
-  }
-
-  function startDetection() {
-    if (!tryShow()) armObserver();
-  }
-
-  // ===== 初始化 =====
-  startDetection();
+  });
 })();

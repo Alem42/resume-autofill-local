@@ -1,0 +1,206 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createController } from '../shared/controller.js';
+import { normalizeProfile, DEFAULT_MODEL } from '../shared/profile.js';
+
+const ID = 'testextensionid';
+const extensionURL = path => `chrome-extension://${ID}/${path.replace(/^\//, '')}`;
+const options = { id: ID, url: extensionURL('options/options.html') };
+const popup = { id: ID, url: extensionURL('popup/popup.html') };
+const page = { id: ID, url: 'https://jobs.example/apply', tab: { id: 1 }, frameId: 0, documentId: 'doc-1' };
+const defaultProfile = normalizeProfile({ basic: { name: 'PRIVATE_NAME_876', phone: 'PRIVATE_PHONE_876', idCard: 'PRIVATE_ID_876' }, work: [{ description: 'PRIVATE_DESCRIPTION_876'.repeat(100) }] });
+function storage(initial = {}) {
+  const data = structuredClone(initial);
+  let access;
+  return { data, get access() { return access; }, async setAccessLevel(value) { access = value.accessLevel; },
+    async get(keys) {
+      if (keys === null) return structuredClone(data);
+      const result = {};
+      for (const key of typeof keys === 'string' ? [keys] : keys) if (key in data) result[key] = structuredClone(data[key]);
+      return result;
+    }, async set(values) { Object.assign(data, structuredClone(values)); }, async remove(keys) { for (const key of typeof keys === 'string' ? [keys] : keys) delete data[key]; } };
+}
+function fixture({ legacy, fetcher, fields } = {}) {
+  const listeners = {};
+  const event = name => ({ addListener(fn) { listeners[name] = fn; } });
+  const outgoing = [];
+  const requests = [];
+  const target = { id: 1, url: page.url, status: 'complete' };
+  const api = {
+    runtime: { id: ID, getURL: extensionURL, onMessage: event('message') },
+    storage: { local: storage(legacy || { schemaVersion: 2, profile: defaultProfile, settings: { model: DEFAULT_MODEL, rememberKey: false } }), session: storage({ secret: 'DUMMY_DEEPSEEK_KEY' }) },
+    tabs: { async query() { return [target]; }, async get(id) { if (id !== 1) throw new Error('missing tab'); return { ...target }; },
+      async sendMessage(tabId, message, route) {
+        outgoing.push({ tabId, message: structuredClone(message), route });
+        if (message.type === 'PREPARE_FIELDS') return { fields: fields || [{ id: 'F0', label: '姓名', componentType: 'native-input' }] };
+        if (message.type === 'APPLY_FIELDS') return { filled: message.mappings.length, skipped: 0 };
+        return { ok: true };
+      }, onUpdated: event('updated'), onRemoved: event('tabRemoved') },
+    scripting: { async executeScript(args) { outgoing.push({ injection: args }); return [{ frameId: 0, documentId: 'doc-1' }]; } },
+    windows: { async create(args) { outgoing.push({ window: args }); return { id: 9, tabs: [{ id: 90 }] }; }, async remove() {}, onRemoved: event('windowRemoved') }
+  };
+  const controller = createController(api, async (url, init) => {
+    requests.push({ url, init });
+    if (fetcher) return fetcher(url, init);
+    return { ok: true, async text() { return JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{"mappings":[{"fieldId":"F0","sourceId":"S0"}]}' } }] }); } };
+  });
+  controller.install();
+  async function detect() {
+    await controller.handle({ type: 'START_DETECTION' }, popup);
+    const flow = api.storage.session.data.flow_1;
+    await controller.handle({ type: 'FORM_DETECTED', scanToken: flow.scanToken }, page);
+    return { ...flow, sender: { id: ID, url: extensionURL(`confirm/confirm.html?requestId=${flow.requestId}`), tab: { id: 90 } } };
+  }
+  return { api, controller, requests, outgoing, detect, target, listeners };
+}
+
+test('网页及伪装本地页面不能读取资料、设置接口、启动检测、调用 API 或确认', async () => {
+  const f = fixture();
+  for (const sender of [page, { ...options, id: 'other' }, { ...page, url: 'file:///options/options.html' }, { ...page, url: 'https://jobs.example/options/options.html' }]) {
+    for (const type of ['GET_OPTIONS', 'SAVE_OPTIONS', 'START_DETECTION', 'TEST_CONNECTION', 'MATCH_FIELDS', 'APPLY_FIELDS']) {
+      await assert.rejects(f.controller.handle({ type }, sender));
+    }
+  }
+  await assert.rejects(f.controller.handle({ type: 'FILL_FORM', fields: [], profile: defaultProfile }, page));
+  await assert.rejects(f.controller.handle({ type: 'PARSE_PDF', text: 'private' }, page));
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.outgoing.length, 0);
+});
+test('检测通知必须有手动授权、匹配文档、URL、令牌和主框架', async () => {
+  const f = fixture();
+  await assert.rejects(f.controller.handle({ type: 'FORM_DETECTED', scanToken: 'fake' }, page));
+  await f.controller.handle({ type: 'START_DETECTION' }, popup);
+  const flow = f.api.storage.session.data.flow_1;
+  for (const sender of [{ ...page, frameId: 2 }, { ...page, documentId: 'new-doc' }, { ...page, url: 'https://evil.invalid/' }]) {
+    await assert.rejects(f.controller.handle({ type: 'FORM_DETECTED', scanToken: flow.scanToken }, sender));
+  }
+  await assert.rejects(f.controller.handle({ type: 'FORM_DETECTED', scanToken: 'fake' }, page));
+  assert.equal(f.requests.length, 0);
+});
+test('必须两次确认；API 不发送任何资料值，实际填写只使用本地值', async () => {
+  const f = fixture();
+  const flow = await f.detect();
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.outgoing.filter(item => item.message?.type === 'APPLY_FIELDS').length, 0);
+  await assert.rejects(f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0'] }, flow.sender));
+  const matched = await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false }, flow.sender);
+  assert.equal(matched.mappings[0].value, defaultProfile.basic.name);
+  assert.equal(f.outgoing.filter(item => item.message?.type === 'APPLY_FIELDS').length, 0);
+  const request = f.requests[0];
+  assert.equal(request.url, 'https://api.deepseek.com/chat/completions');
+  assert.equal(request.init.redirect, 'error');
+  assert.equal(request.init.credentials, 'omit');
+  assert.equal(request.init.body.includes('PRIVATE_'), false);
+  assert.equal(request.init.body.includes(page.url), false);
+  assert.equal(request.init.body.includes('DUMMY_DEEPSEEK_KEY'), false);
+  await assert.rejects(f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F99'] }, flow.sender));
+  const result = await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0'] }, flow.sender);
+  assert.equal(result.filled, 1);
+  const applied = f.outgoing.find(item => item.message?.type === 'APPLY_FIELDS');
+  assert.deepEqual(applied.route, { documentId: 'doc-1' });
+  assert.equal(applied.message.mappings[0].value, defaultProfile.basic.name);
+  assert.equal(applied.message.apiKey, undefined);
+  assert.equal((await f.controller.handle({ type: 'GET_STATUS' }, popup)).active, false);
+  await assert.rejects(f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0'] }, flow.sender));
+});
+test('其他扩展窗口不能代替原确认窗口', async () => {
+  const f = fixture();
+  const flow = await f.detect();
+  await assert.rejects(f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false }, { ...flow.sender, tab: { id: 99 } }));
+  assert.equal(f.requests.length, 0);
+});
+test('取消检测、刷新、改变 URL 或确认过期后不能继续匹配', async () => {
+  for (const action of ['cancel', 'navigate', 'expire', 'reload']) {
+    const f = fixture();
+    const flow = await f.detect();
+    if (action === 'cancel') await f.controller.handle({ type: 'CANCEL_CONFIRMATION', requestId: flow.requestId }, flow.sender);
+    if (action === 'navigate') f.target.url = 'https://jobs.example/other';
+    if (action === 'expire') f.api.storage.session.data.flow_1.createdAt -= 11 * 60 * 1000;
+    if (action === 'reload') { f.listeners.updated(1, { status: 'loading' }); await new Promise(resolve => setImmediate(resolve)); }
+    await assert.rejects(f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false }, flow.sender));
+    assert.equal(f.requests.length, 0);
+  }
+});
+test('AI 注入 selector/value 或选择未授权资料时不写入网页', async () => {
+  for (const mapping of [{ fieldId: 'F0', sourceId: 'S0', selector: '#password' }, { fieldId: 'F0', sourceId: 'S0', value: 'evil' }, { fieldId: 'F0', sourceId: 'S2' }]) {
+    const f = fixture({ fetcher: async () => ({ ok: true, async text() { return JSON.stringify({ choices: [{ message: { content: JSON.stringify({ mappings: [mapping] }) } }] }); } }) });
+    const flow = await f.detect();
+    await assert.rejects(f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false }, flow.sender));
+    assert.equal(f.outgoing.some(item => item.message?.type === 'APPLY_FIELDS'), false);
+  }
+});
+test('默认密钥只保存在会话；明确勾选才持久保存，读取设置不回显', async () => {
+  const f = fixture();
+  await f.controller.handle({ type: 'SAVE_OPTIONS', profile: defaultProfile, model: DEFAULT_MODEL, apiKey: 'NEW_KEY', rememberKey: false }, options);
+  assert.equal(f.api.storage.session.data.secret, 'NEW_KEY');
+  assert.equal(f.api.storage.local.data.secret, undefined);
+  assert.equal(f.api.storage.local.access, 'TRUSTED_CONTEXTS');
+  assert.equal(f.api.storage.session.access, 'TRUSTED_CONTEXTS');
+  assert.equal(JSON.stringify(await f.controller.handle({ type: 'GET_OPTIONS' }, options)).includes('NEW_KEY'), false);
+  await f.controller.handle({ type: 'SAVE_OPTIONS', profile: defaultProfile, model: DEFAULT_MODEL, apiKey: '', rememberKey: true }, options);
+  assert.equal(f.api.storage.local.data.secret, 'NEW_KEY');
+  assert.equal(f.api.storage.session.data.secret, undefined);
+  await f.controller.handle({ type: 'CLEAR_KEY' }, options);
+  assert.equal(f.api.storage.local.data.secret, undefined);
+});
+test('旧版资料迁移，但不沿用任意服务商密钥或 PDF 结果', async () => {
+  const f = fixture({ legacy: { basic: { name: 'OLD_NAME' }, education: [], llm: { baseUrl: 'https://evil.invalid', apiKey: 'OLD_KEY' }, pendingPdfProfile: { basic: { name: 'PDF_NAME' } } } });
+  await f.controller.ready;
+  assert.equal(f.api.storage.local.data.profile.basic.name, 'OLD_NAME');
+  assert.equal(f.api.storage.local.data.basic, undefined);
+  assert.equal(f.api.storage.local.data.llm, undefined);
+  assert.equal(f.api.storage.local.data.pendingPdfProfile, undefined);
+});
+test('关闭确认窗口会中止请求且不产生填写预览或写入', async () => {
+  let started;
+  const begin = new Promise(resolve => { started = resolve; });
+  const f = fixture({ fetcher: async (url, init) => {
+    started();
+    return new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+  } });
+  const flow = await f.detect();
+  const matching = f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false }, flow.sender);
+  const rejected = assert.rejects(matching, /取消|停止/);
+  await begin;
+  f.listeners.windowRemoved(9);
+  await rejected;
+  assert.equal(f.outgoing.some(item => item.message?.type === 'APPLY_FIELDS'), false);
+});
+test('失败 API 不自动重试，不回显可能含密钥的响应正文', async () => {
+  const f = fixture({ fetcher: async () => ({ ok: false, status: 401, async text() { return 'DUMMY_DEEPSEEK_KEY'; } }) });
+  const flow = await f.detect();
+  await assert.rejects(f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false }, flow.sender), error => !error.message.includes('DUMMY_DEEPSEEK_KEY') && error.message.includes('401'));
+  assert.equal(f.requests.length, 1);
+});
+
+test('并发点击确认只允许一份匹配请求', async () => {
+  let complete;
+  const f = fixture({ fetcher: async () => new Promise(resolve => {
+    complete = () => resolve({ ok: true, async text() { return JSON.stringify({ choices: [{ message: { content: '{"mappings":[{"fieldId":"F0","sourceId":"S0"}]}' } }] }); } });
+  }) });
+  const flow = await f.detect();
+  const message = { type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false };
+  const first = f.controller.handle(message, flow.sender);
+  const second = f.controller.handle(message, flow.sender);
+  const outcomes = Promise.allSettled([first, second]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.requests.length, 1);
+  complete();
+  const results = await outcomes;
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(results.filter(result => result.status === 'rejected').length, 1);
+});
+
+test('后台意外重启后不自动重试匹配或继续填写', async () => {
+  for (const state of ['matching', 'applying']) {
+    const f = fixture();
+    const flow = await f.detect();
+    f.api.storage.session.data.flow_1.status = state;
+    const restarted = createController(f.api, () => { throw new Error('must not call API'); });
+    const confirmation = await restarted.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, flow.sender);
+    assert.equal(confirmation.status, state === 'matching' ? 'detected' : 'error');
+    assert.ok(confirmation.error.includes('重新启动'));
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.outgoing.some(item => item.message?.type === 'APPLY_FIELDS'), false);
+  }
+});
