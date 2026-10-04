@@ -6,11 +6,16 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Claude Code â€” machine-local settings (permissions, paths)
+# Machine-local assistant settings
 .claude/settings.local.json
 
-# Playwright ä¼šè¯äº§ç‰©
+# Browser automation artifacts
 .playwright-cli/
 .playwright-mcp/
-# Sisyphus ¹¤×÷±Ê¼Ç
 .sisyphus/
+
+# Personal backups and local secrets
+personal-profile*.json
+.env
+.env.*
+!.env.example
