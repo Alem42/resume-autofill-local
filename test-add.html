@@ -91,6 +91,7 @@
 <body>
   <div class="container">
     <h1>📝 简历信息表单（添加区块测试）</h1>
+    <p>本页只使用虚构测试数据。可在设置页导入 <code>examples/profile.example.json</code> 并保存，然后手动开启检测。第一次确认时允许按资料数量添加条目，第二次确认后填写。加上 <code>?async</code> 可测试延迟渲染，<code>?seed</code> 可测试保留已有内容。</p>
 
     <!-- 基本信息：固定表单 -->
     <section class="bili-resume-card" id="resume基本信息">
@@ -108,6 +109,10 @@
           <div class="bili-form-flex ant-row ant-form-item">
             <label>邮箱</label>
             <input type="email" name="email" placeholder="请输入邮箱" class="ant-input">
+          </div>
+          <div class="bili-form-flex ant-row ant-form-item">
+            <label>预计毕业时间</label>
+            <input type="month" name="expectedGraduationDate">
           </div>
         </form>
       </div>
@@ -147,6 +152,14 @@
     </section>
 
     <!-- 语言能力：初始为空，仅"添加"按钮 -->
+    <section class="bili-resume-card" id="resume获奖信息">
+      <header class="bili-form-card-header">获奖信息</header>
+      <div class="bili-form-card-body">
+        <div id="award-list"></div>
+        <button type="button" class="bili-form-add" onclick="addBlock('award-list', AWARD_TEMPLATE)">+ 添加获奖信息</button>
+      </div>
+    </section>
+
     <section class="bili-resume-card" id="resume语言能力">
       <header class="bili-form-card-header">语言能力</header>
       <div class="bili-form-card-body">
@@ -159,27 +172,52 @@
   </div>
 
   <script>
-    // 参照 B 站真实结构：点击"添加"后插入 .bili-form-multiple 字段块（同步渲染）
+    // 模拟多条经历布局。?async 时延迟插入，用于检查是否等待渲染再继续添加。
     const EDU_TEMPLATE = `
       <div class="bili-form-flex ant-row ant-form-item"><label>学校名称</label><input type="text" name="school" placeholder="请输入学校名称" class="ant-input"></div>
       <div class="bili-form-flex ant-row ant-form-item"><label>专业</label><input type="text" name="major" placeholder="请输入专业" class="ant-input"></div>
-      <div class="bili-form-flex ant-row ant-form-item"><label>学历</label><select name="degree"><option value="">请选择学历</option><option value="本科">本科</option><option value="硕士">硕士</option></select></div>`;
+      <div class="bili-form-flex ant-row ant-form-item"><label>学历</label><select name="degree"><option value="">请选择学历</option><option value="本科">本科</option><option value="硕士">硕士</option></select></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>学位名称</label><input name="degreeName"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>专业大类</label><input name="majorCategory"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>开始时间</label><input type="month" name="startDate"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>结束时间</label><input type="month" name="endDate"></div>`;
 
     const WORK_TEMPLATE = `
       <div class="bili-form-flex ant-row ant-form-item"><label>公司名称</label><input type="text" name="company" placeholder="请输入公司名称" class="ant-input"></div>
       <div class="bili-form-flex ant-row ant-form-item"><label>职位名称</label><input type="text" name="position" placeholder="请输入职位名称" class="ant-input"></div>
-      <div class="bili-form-flex ant-row ant-form-item"><label>工作描述</label><textarea name="work_desc" placeholder="请输入工作描述" class="ant-input"></textarea></div>`;
+      <div class="bili-form-flex ant-row ant-form-item"><label>工作描述</label><textarea name="work_desc" placeholder="请输入工作描述" class="ant-input"></textarea></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>开始时间</label><input type="month" name="startDate"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>结束时间</label><input type="month" name="endDate"></div>`;
 
     const PROJECT_TEMPLATE = `
       <div class="bili-form-flex ant-row ant-form-item"><label>项目名称</label><input type="text" name="project_name" placeholder="请输入项目名称" class="ant-input"></div>
       <div class="bili-form-flex ant-row ant-form-item"><label>项目角色</label><input type="text" name="project_role" placeholder="请输入项目角色" class="ant-input"></div>
-      <div class="bili-form-flex ant-row ant-form-item"><label>项目描述</label><textarea name="project_desc" placeholder="请输入项目描述" class="ant-input"></textarea></div>`;
+      <div class="bili-form-flex ant-row ant-form-item"><label>项目描述</label><textarea name="project_desc" placeholder="请输入项目描述" class="ant-input"></textarea></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>个人贡献</label><textarea name="responsibilities"></textarea></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>项目成果</label><textarea name="achievements"></textarea></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>开始时间</label><input type="month" name="startDate"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>结束时间</label><input type="month" name="endDate"></div>`;
+
+    const AWARD_TEMPLATE = `
+      <div class="bili-form-flex ant-row ant-form-item"><label>奖项名称</label><input name="awardName"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>奖项类别</label><input name="category"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>奖项级别</label><input name="level" placeholder="例如国家级、省级"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>奖项等级</label><input name="rank" placeholder="例如一等奖"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>获奖时间</label><input type="month" name="awardDate"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>获奖内容</label><textarea name="awardDescription"></textarea></div>`;
 
     const LANGUAGE_TEMPLATE = `
-      <div class="bili-form-flex ant-row ant-form-item"><label>语言类型</label><input type="text" name="language" placeholder="请输入语言" class="ant-input"></div>`;
+      <div class="bili-form-flex ant-row ant-form-item"><label>语言类型</label><input type="text" name="language" placeholder="请输入语言" class="ant-input"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>考试名称</label><input name="exam"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>考试成绩</label><input name="score"></div>`;
 
     let blockSeq = 0;
     function addBlock(listId, template) {
+      if (location.search.includes('async')) {
+        setTimeout(() => insertBlock(listId, template), 350);
+      } else insertBlock(listId, template);
+    }
+    function insertBlock(listId, template) {
       blockSeq++;
       const list = document.getElementById(listId);
       const div = document.createElement('div');
@@ -191,10 +229,10 @@
     // ?seed 开启：预置 1 条工作经历，模拟「页面已有部分块」的增量补齐场景；
     // 默认不开启，保持各区块初始为空（原有测试流程不变）
     if (location.search.includes('seed')) {
-      addBlock('work-list', WORK_TEMPLATE);
+      insertBlock('work-list', WORK_TEMPLATE);
       const seed = document.querySelector('#work-list .bili-form-multiple');
       const company = seed && seed.querySelector('input[name="company"]');
-      if (company) company.value = '已填写的公司';
+      if (company) company.value = '演示已有公司（虚构）';
     }
   </script>
 </body>

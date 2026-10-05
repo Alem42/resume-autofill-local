@@ -5,20 +5,26 @@
   <h1>检测到简历表单</h1>
   <p>是否允许填写这个页面？请核对地址，并选择本次允许使用的资料。</p>
   <p id="target-site" class="site"></p>
-  <p class="notice">先确认资料范围，再预览具体字段。DeepSeek 只做字段匹配，不接收下面的资料值。你确认填写后，所选资料将出现在该网页中，网站可以读取或自动保存它们。</p>
+  <p class="notice">先确认资料范围，再预览具体字段。默认只发送字段描述与资料项名称。仅在你主动开启 AI 辅助校对后，才会发送本次勾选的资料值及对应网页字段的已有值 / 填写结果。确认写入后，网站可以读取或自动保存填写内容。</p>
   <section id="selection" class="card" hidden>
     <h2>本次允许填写的资料</h2>
     <div class="actions"><button id="select-common" type="button">选中普通资料</button><button id="select-none" type="button">全部取消</button></div>
     <div id="sources"></div>
-    <label class="check-row"><input id="overwrite" type="checkbox"><span>允许覆盖已有内容<small class="value">默认跳过已有值。先在网页上手动添加需要的经历条目。</small></span></label>
-    <div class="actions"><button id="match" class="primary" type="button">确认资料范围，匹配字段</button></div>
+    <p id="record-summary" class="notice"></p>
+    <label class="check-row"><input id="auto-add" type="checkbox" checked><span>自动补足缺少的经历条目<small class="value">确认后按所选资料数量点击明确的“添加教育 / 项目 / 实习 / 获奖”等按钮，只创建空表单。不点击保存、上传或投递；取消不会移除已添加的空条目。</small></span></label>
+    <label class="check-row"><input id="ai-assist" type="checkbox"><span>允许发送所选资料值，启用 AI 辅助判断与校对<small class="value">默认关闭。勾选后会将本次允许的资料值、对应字段的已有值及填写后读回的结果发送给 DeepSeek，以理解不同网站的措辞。会增加 API 调用和费用；判断仅供参考，不会编造或改写经历。</small></span></label>
+    <label class="check-row"><input id="overwrite" type="checkbox"><span>允许覆盖已有内容<small class="value">默认保留已有值。AI 校对可指出差异，但不会擅自覆盖。</small></span></label>
+    <div class="actions"><button id="match" class="primary" type="button">确认资料范围，准备表单并匹配</button></div>
   </section>
   <section id="preview" class="card" hidden>
     <h2>填写预览</h2>
     <p class="muted">请检查对应关系，取消勾选不需要填写的字段。</p>
+    <div id="preparation-report"></div>
     <div id="mappings"></div>
+    <details id="unmatched-panel" hidden><summary>未匹配字段（可手动选择对应资料）</summary><div id="unmatched"></div></details>
     <div class="actions"><button id="apply" class="primary" type="button">确认填写所选字段</button></div>
   </section>
+  <section id="after-review" class="card" hidden><h2>填写后的内容校对</h2><p class="muted">AI 校对不等于事实认证，请回到网页核对；需要修正时可重新检测或手动编辑。</p><div id="review-results"></div></section>
   <p id="status" class="status" role="status" aria-live="polite">正在载入…</p>
   <div class="actions"><button id="cancel" type="button">取消并关闭本页检测</button></div>
   <script type="module" src="confirm.js"></script>

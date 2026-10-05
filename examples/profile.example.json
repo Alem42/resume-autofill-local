@@ -1,0 +1,27 @@
+{
+  "basic": {
+    "name": "演示同学（虚构）",
+    "phone": "PHONE_DEMO_ONLY",
+    "email": "demo@example.invalid",
+    "expectedGraduationDate": "2027-06",
+    "highestDegree": "硕士"
+  },
+  "education": [
+    { "school": "演示研究生大学（虚构）", "major": "计算机科学", "degree": "硕士", "degreeName": "工学硕士", "majorCategory": "工学", "startDate": "2024-09", "endDate": "2027-06" },
+    { "school": "演示本科大学（虚构）", "major": "软件工程", "degree": "本科", "degreeName": "工学学士", "majorCategory": "工学", "startDate": "2020-09", "endDate": "2024-06" }
+  ],
+  "internships": [
+    { "company": "演示实习公司（虚构）", "position": "开发实习生", "startDate": "2025-07", "endDate": "2025-09", "description": "仅用于测试的实习描述。" }
+  ],
+  "projects": [
+    { "projectName": "演示项目一（虚构）", "role": "开发", "startDate": "2025-01", "endDate": "2025-03", "description": "仅用于测试的项目一描述。", "responsibilities": "演示个人贡献一。", "achievements": "演示成果一。" },
+    { "projectName": "演示项目二（虚构）", "role": "开发", "startDate": "2024-09", "endDate": "2024-12", "description": "仅用于测试的项目二描述。", "responsibilities": "演示个人贡献二。", "achievements": "演示成果二。" },
+    { "projectName": "演示项目三（虚构）", "role": "测试", "startDate": "2024-01", "endDate": "2024-04", "description": "仅用于测试的项目三描述。", "responsibilities": "演示个人贡献三。", "achievements": "演示成果三。" }
+  ],
+  "awards": [
+    { "name": "演示竞赛（虚构）", "category": "学科竞赛", "level": "省级", "rank": "一等奖", "date": "2025-05", "description": "仅用于测试的获奖内容，不代表真实成绩。" }
+  ],
+  "languageCertificates": [
+    { "language": "英语", "exam": "CET-6", "score": "SCORE_DEMO_ONLY" }
+  ]
+}

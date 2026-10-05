@@ -44,4 +44,12 @@ details[open].card > summary { margin-bottom: 20px; }
 .switch { display: flex; align-items: center; justify-content: space-between; font-weight: 600; cursor: pointer; }
 .switch input { width: 24px; height: 24px; }
 .confirm main { margin: 20px auto; }
+.source-group { border-bottom: 1px solid #dde4ef; padding: 14px 0; }
+.source-group > summary { font-weight: 600; cursor: pointer; }
+.mapping-row { border-bottom: 1px solid #dde4ef; padding-bottom: 12px; }
+.mapping-adjust { margin: 6px 0 0 28px; font-size: 13px; }
+.mapping-adjust > summary { cursor: pointer; color: #245bdc; margin-bottom: 8px; }
+.review-note { display: block; line-height: 1.6; margin-top: 8px; }
+.review-note.ok { color: #226542; }
+.review-note.warning, .review-note.uncertain { color: #a74b14; }
 @media (max-width: 650px) { .grid { grid-template-columns: 1fr; } main { padding: 0 16px 24px; } .card { padding: 18px; } }

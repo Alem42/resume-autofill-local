@@ -4,6 +4,8 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('../content/content.js', import.meta.url), 'utf8');
+const semantics = readFileSync(new URL('../shared/semantics-core.js', import.meta.url), 'utf8');
+const sections = readFileSync(new URL('../content/sections.js', import.meta.url), 'utf8');
 const extensionId = 'testextensionid';
 const worker = { id: extensionId, url: `chrome-extension://${extensionId}/background/background.js` };
 function fixture(fields = []) {
@@ -68,6 +70,8 @@ function fixture(fields = []) {
       onMessage: { addListener(fn) { listener = fn; } }, async sendMessage(message) { messages.push(message); return { pending: true }; } },
       get storage() { throw new Error('Content scripts must not access storage'); } }
   });
+  vm.runInContext(semantics, context);
+  vm.runInContext(sections, context);
   vm.runInContext(source, context);
   async function send(message, sender = worker) {
     return new Promise((resolve, reject) => {

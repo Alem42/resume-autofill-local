@@ -2,13 +2,13 @@ import { PROFILE_SCHEMA, TEXT_FIELDS, SENSITIVE_KEYS, MAX_ENTRIES, normalizeProf
 import { send, element, status, onClick } from '../shared/ui.js';
 
 const containers = new Map();
-const longFields = new Set(['description', 'awards', 'publications']);
+const longFields = new Set(['description', 'awards', 'publications', 'responsibilities', 'achievements', 'coreCourses', 'authors', 'leavingReason']);
 function field(section, key, label, value = '') {
   const wrapper = element('label', 'field' + (longFields.has(key) ? ' wide' : ''));
   const sensitive = SENSITIVE_KEYS.has(`${section}.${key}`);
   wrapper.append(element('span', sensitive ? 'sensitive' : '', label + (sensitive ? '（敏感，可留空）' : '')));
   const input = element(longFields.has(key) ? 'textarea' : 'input');
-  if (input.tagName === 'INPUT') input.type = 'text';
+  if (input.tagName === 'INPUT') input.type = key === 'expectedGraduationDate' ? 'month' : 'text';
   input.dataset.key = key;
   input.value = value;
   input.maxLength = 20000;
@@ -27,9 +27,22 @@ function record(section, schema, data = {}) {
     remove.addEventListener('click', event => {
       if (!event.isTrusted) return;
       node.remove();
+      updateOrder(section);
       status('有未保存的修改');
     });
-    header.append(remove);
+    const actions = element('div', 'row');
+    for (const [label, direction] of [['上移', -1], ['下移', 1]]) {
+      const move = element('button', '', label); move.type = 'button';
+      move.addEventListener('click', event => {
+        if (!event.isTrusted) return;
+        const sibling = direction < 0 ? node.previousElementSibling : node.nextElementSibling;
+        if (!sibling) return;
+        if (direction < 0) node.parentElement.insertBefore(node, sibling); else node.parentElement.insertBefore(sibling, node);
+        updateOrder(section); status('顺序已调整，请保存。');
+      });
+      actions.append(move);
+    }
+    actions.append(remove); header.append(actions);
     node.append(header);
   }
   const grid = element('div', 'grid');
@@ -54,6 +67,7 @@ function render(profile) {
         if (!event.isTrusted) return;
         if (entries.children.length >= MAX_ENTRIES) return status(`最多 ${MAX_ENTRIES} 条`, true);
         entries.append(record(section, schema));
+        updateOrder(section);
         status('有未保存的修改');
       });
       details.append(entries, add);
@@ -79,6 +93,13 @@ function render(profile) {
   }
   textCard.append(grid);
   root.append(textCard);
+  for (const section of containers.keys()) updateOrder(section);
+}
+function updateOrder(section) {
+  if (!PROFILE_SCHEMA[section].multiple) return;
+  [...containers.get(section).children].forEach((node, index) => {
+    node.querySelector('.entry-header strong').textContent = `第 ${index + 1} 条${PROFILE_SCHEMA[section].title}`;
+  });
 }
 function collect() {
   const data = {};

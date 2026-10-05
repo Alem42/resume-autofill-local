@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createController } from '../shared/controller.js';
-import { normalizeProfile, DEFAULT_MODEL } from '../shared/profile.js';
+import { normalizeProfile, profileSources, DEFAULT_MODEL } from '../shared/profile.js';
+import { domFixture } from './dom-fixture.js';
 
 const ID = 'testextensionid';
 const extensionURL = path => `chrome-extension://${ID}/${path.replace(/^\//, '')}`;
@@ -20,7 +21,7 @@ function storage(initial = {}) {
       return result;
     }, async set(values) { Object.assign(data, structuredClone(values)); }, async remove(keys) { for (const key of typeof keys === 'string' ? [keys] : keys) delete data[key]; } };
 }
-function fixture({ legacy, fetcher, fields } = {}) {
+function fixture({ legacy, fetcher, fields, profile = defaultProfile, pageHandler } = {}) {
   const listeners = {};
   const event = name => ({ addListener(fn) { listeners[name] = fn; } });
   const outgoing = [];
@@ -28,10 +29,11 @@ function fixture({ legacy, fetcher, fields } = {}) {
   const target = { id: 1, url: page.url, status: 'complete' };
   const api = {
     runtime: { id: ID, getURL: extensionURL, onMessage: event('message') },
-    storage: { local: storage(legacy || { schemaVersion: 2, profile: defaultProfile, settings: { model: DEFAULT_MODEL, rememberKey: false } }), session: storage({ secret: 'DUMMY_DEEPSEEK_KEY' }) },
+    storage: { local: storage(legacy || { schemaVersion: 2, profile, settings: { model: DEFAULT_MODEL, rememberKey: false } }), session: storage({ secret: 'DUMMY_DEEPSEEK_KEY' }) },
     tabs: { async query() { return [target]; }, async get(id) { if (id !== 1) throw new Error('missing tab'); return { ...target }; },
       async sendMessage(tabId, message, route) {
         outgoing.push({ tabId, message: structuredClone(message), route });
+        if (pageHandler) return pageHandler(message);
         if (message.type === 'PREPARE_FIELDS') return { fields: fields || [{ id: 'F0', label: '姓名', componentType: 'native-input' }] };
         if (message.type === 'APPLY_FIELDS') return { filled: message.mappings.length, skipped: 0 };
         return { ok: true };
@@ -203,4 +205,120 @@ test('后台意外重启后不自动重试匹配或继续填写', async () => {
     assert.equal(f.requests.length, 0);
     assert.equal(f.outgoing.some(item => item.message?.type === 'APPLY_FIELDS'), false);
   }
+});
+
+function modelResponse(result) {
+  return { ok: true, async text() { return JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }] }); } };
+}
+
+test('完整流程按所选数量添加两段教育、三段项目和奖项，二次确认前不写个人值', async () => {
+  const dom = domFixture();
+  const basic = dom.section('基本信息'); dom.record(basic, [['姓名'], ['预计毕业时间', { type: 'month' }]]);
+  const edu = dom.section('教育经历'), projects = dom.section('项目经验', { label: '+ 添加项目经验', tag: 'div' }), awards = dom.section('获奖信息');
+  const eduFields = [['学校名称'], ['开始时间'], ['结束时间']];
+  dom.record(edu, eduFields);
+  edu.button.onClick = () => dom.record(edu, eduFields);
+  projects.button.onClick = () => dom.record(projects, [['项目名称'], ['开始时间'], ['结束时间']]);
+  awards.button.onClick = () => dom.record(awards, [['奖项名称'], ['获奖内容', { tag: 'textarea' }]]);
+  const profile = normalizeProfile({ basic: { name: 'PRIVATE_DEMO', expectedGraduationDate: '2027-06', idCard: 'NEVER_SEND_ID' },
+    education: [{ school: '演示本科大学', startDate: '2020-09', endDate: '2024-06' }, { school: '演示研究生大学', startDate: '2024-09', endDate: '2027-06' }],
+    projects: Array.from({ length: 3 }, (_, i) => ({ projectName: `演示项目${i + 1}`, startDate: `202${i + 1}-01`, endDate: `202${i + 1}-06` })),
+    awards: [{ name: '演示奖项', description: '演示获奖内容' }] });
+  const keys = { '姓名': 'name', '预计毕业时间': 'expectedGraduationDate', '学校名称': 'school', '开始时间': 'startDate', '结束时间': 'endDate', '项目名称': 'projectName', '奖项名称': 'name', '获奖内容': 'description' };
+  const f = fixture({ profile, pageHandler: dom.send, fetcher: async (url, init) => {
+    const { fields, sources } = JSON.parse(JSON.parse(init.body).messages[1].content);
+    return modelResponse({ mappings: fields.map(field => {
+      const source = sources.find(source => source.section === field.section && source.fieldKey === keys[field.label]
+        && (field.recordIndex === null || source.recordIndex === field.recordIndex));
+      return { fieldId: field.id, sourceId: source.id };
+    }) });
+  } });
+  const flow = await f.detect();
+  assert.equal(dom.events.length, 0);
+  const sourceIds = profileSources(profile).filter(source => !source.sensitive).map(source => source.id);
+  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds, autoAdd: true, aiAssist: false, overwrite: false }, flow.sender);
+  assert.equal(edu.list.children.length, 2); assert.equal(projects.list.children.length, 3); assert.equal(awards.list.children.length, 1);
+  assert.ok(dom.doc.querySelectorAll('input,textarea').every(input => input.value === ''));
+  assert.ok(f.requests.every(request => !request.init.body.includes('PRIVATE_DEMO') && !request.init.body.includes('演示本科大学')));
+  const preview = await f.controller.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, flow.sender);
+  const result = await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: preview.mappings.map(mapping => mapping.fieldId) }, flow.sender);
+  assert.equal(result.filled, 19);
+  assert.deepEqual(edu.list.children.map(record => record.querySelectorAll('input').map(input => input.value)),
+    [['演示本科大学', '2020-09', '2024-06'], ['演示研究生大学', '2024-09', '2027-06']]);
+  assert.deepEqual(projects.list.children.map(record => record.querySelector('input').value), ['演示项目1', '演示项目2', '演示项目3']);
+  assert.equal(basic.list.querySelectorAll('input')[1].value, '2027-06');
+});
+
+test('明确开启 AI 辅助才上传所选资料和对应已有值，并校对真实读回结果', async () => {
+  const dom = domFixture(); const basic = dom.section('基本信息'); dom.record(basic, [['姓名', { value: 'PRIVATE_OLD_NAME' }], ['手机号']]);
+  const f = fixture({ pageHandler: dom.send, fetcher: async (url, init) => {
+    const data = JSON.parse(JSON.parse(init.body).messages[1].content);
+    if (!data.phase) return modelResponse({ mappings: [{ fieldId: 'F0', sourceId: 'S0' }, { fieldId: 'F1', sourceId: 'S1' }] });
+    return modelResponse({ reviews: data.fields.map(field => ({ fieldId: field.id, status: field.id === 'F0' ? 'warning' : 'ok', reason: '演示校对结果' })) });
+  } });
+  const flow = await f.detect();
+  const preview = await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0', 'S1'], aiAssist: true, overwrite: false }, flow.sender);
+  assert.equal(preview.reviews[0].status, 'warning'); assert.equal(f.requests.length, 2);
+  assert.ok(f.requests[0].init.body.includes('PRIVATE_NAME_876'));
+  assert.ok(f.requests[1].init.body.includes('PRIVATE_OLD_NAME'));
+  assert.ok(f.requests.every(request => !request.init.body.includes('PRIVATE_ID_876') && !request.init.body.includes('PRIVATE_DESCRIPTION_876')));
+  const result = await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F1'] }, flow.sender);
+  assert.equal(result.filled, 1); assert.equal(result.reviews.length, 2);
+  const audit = JSON.parse(JSON.parse(f.requests[2].init.body).messages[1].content);
+  assert.equal(audit.phase, 'after');
+  assert.equal(audit.fields.find(field => field.id === 'F1').observedValue, 'PRIVATE_PHONE_876');
+  assert.equal(audit.fields.find(field => field.id === 'F0').observedValue, 'PRIVATE_OLD_NAME');
+  assert.equal(result.readback, undefined);
+});
+
+test('AI 填写后校对失败仍准确报告已填写数量，不把模型建议当成修改值', async () => {
+  const dom = domFixture(); const basic = dom.section('基本信息'); dom.record(basic, [['姓名']]);
+  let calls = 0;
+  const f = fixture({ pageHandler: dom.send, fetcher: async () => {
+    calls++;
+    if (calls === 1) return modelResponse({ mappings: [{ fieldId: 'F0', sourceId: 'S0' }] });
+    if (calls === 2) return modelResponse({ reviews: [{ fieldId: 'F0', status: 'ok', reason: '检查完成' }] });
+    return modelResponse({ reviews: [{ fieldId: 'F0', status: 'warning', reason: '修改', value: 'MODEL_INVENTED' }] });
+  } });
+  const flow = await f.detect();
+  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], aiAssist: true, overwrite: false }, flow.sender);
+  const result = await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0'] }, flow.sender);
+  assert.equal(result.filled, 1); assert.ok(result.reviewError); assert.equal(result.readback, undefined);
+  assert.equal(basic.list.querySelector('input').value, 'PRIVATE_NAME_876');
+});
+
+test('未经确认不能自动添加或读已有值，非布尔辅助开关被拒绝', async () => {
+  const f = fixture();
+  for (const type of ['ENSURE_RECORDS', 'READ_VALUES', 'CHANGE_MAPPING']) await assert.rejects(f.controller.handle({ type }, page));
+  const flow = await f.detect();
+  for (const flag of ['aiAssist', 'autoAdd']) await assert.rejects(f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false, [flag]: 'true' }, flow.sender));
+  assert.equal(f.requests.length, 0); assert.equal(f.outgoing.some(item => item.message?.type === 'ENSURE_RECORDS'), false);
+});
+
+test('模型跨教育工作映射被阻止，人工调整也不能跨已知区块或条目', async () => {
+  const profile = normalizeProfile({ education: [{ school: '演示学校' }], work: [{ company: '演示公司' }] });
+  const sources = profileSources(profile), school = sources.find(source => source.key === 'education.0.school'), company = sources.find(source => source.key === 'work.0.company');
+  const fields = [{ id: 'F0', section: 'education', recordIndex: 0, label: '学校名称', componentType: 'native-input' }];
+  const bad = fixture({ profile, fields, fetcher: async () => modelResponse({ mappings: [{ fieldId: 'F0', sourceId: company.id }] }) });
+  let flow = await bad.detect();
+  await assert.rejects(bad.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: sources.map(source => source.id), overwrite: false }, flow.sender), /错误的经历|未授权/);
+  const good = fixture({ profile, fields, fetcher: async () => modelResponse({ mappings: [{ fieldId: 'F0', sourceId: school.id }] }) });
+  flow = await good.detect();
+  await good.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: sources.map(source => source.id), overwrite: false }, flow.sender);
+  await assert.rejects(good.controller.handle({ type: 'CHANGE_MAPPING', requestId: flow.requestId, fieldId: 'F0', sourceId: company.id }, flow.sender), /不能跨/);
+  const preview = await good.controller.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, flow.sender);
+  assert.equal(preview.mappings[0].value, '演示学校');
+});
+
+test('大页面分批匹配且每个字段只出现一次，每批不超过60个字段', async () => {
+  const fields = Array.from({ length: 121 }, (_, i) => ({ id: `F${i}`, label: '姓名', section: 'basic', componentType: 'native-input' }));
+  const f = fixture({ fields, fetcher: async (url, init) => {
+    const { fields } = JSON.parse(JSON.parse(init.body).messages[1].content);
+    assert.ok(fields.length <= 60);
+    return modelResponse({ mappings: fields.map(field => ({ fieldId: field.id, sourceId: 'S0' })) });
+  } });
+  const flow = await f.detect();
+  const preview = await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false }, flow.sender);
+  assert.equal(f.requests.length, 3); assert.equal(preview.mappings.length, 121);
+  assert.equal(new Set(preview.mappings.map(mapping => mapping.fieldId)).size, 121);
 });

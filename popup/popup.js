@@ -1,7 +1,7 @@
 import { send, status, onClick } from '../shared/ui.js';
 const toggle = document.getElementById('detection');
 const labels = { off: '本页检测未开启', watching: '正在检测本页，等待简历表单…',
-  detected: '等待你在确认窗口选择资料', matching: '正在匹配字段，尚未填写',
+  detected: '等待你在确认窗口选择资料', matching: '正在准备经历区块与匹配字段', auditing: '已写入，正在 AI 校对结果',
   preview: '等待你检查填写预览', applying: '正在填写网页', completed: '本次填写已结束，检测已关闭', error: '本次填写已中断，请检查网页后重新检测' };
 async function refresh() {
   const data = await send({ type: 'GET_STATUS' });

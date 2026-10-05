@@ -11,6 +11,10 @@
   let detectionTimer = null;
   let debounceTimer = null;
   const fieldRegistry = new Map();
+  const MAX_FIELDS = 400;
+  const sectionAgent = globalThis.__resumeSections;
+  let fieldContexts = new Map();
+  let includeExisting = false;
   const INPUT_TYPES = new Set(['text', 'email', 'tel', 'url', 'number', 'date', 'month', 'week', 'time', 'datetime-local']);
 
   function eligibleElement(el) {
@@ -167,18 +171,26 @@
     return elements;
   }
 
+  function sectionHooks(token = activeScanToken) {
+    return { text: readLabelText, label: getLabelText, visible: isVisible,
+      elements: () => scanFieldElements().filter(eligibleElement), sleep,
+      check() { if (!activeScanToken || activeScanToken !== token) throw new Error('操作已停止'); } };
+  }
   function collectFields() {
     const fields = [];
     fieldRegistry.clear();
     const collected = new Set();
-    for (const el of scanFieldElements()) {
+    const elements = scanFieldElements().filter(eligibleElement);
+    fieldContexts = sectionAgent.inspect(elements, sectionHooks()).fields;
+    for (const el of elements) {
       addField(el, collected, fields);
     }
     return fields;
   }
 
   function addField(el, collected, fields) {
-    if (collected.has(el) || !eligibleElement(el) || (!allowOverwrite && fieldHasValue(el)) || fields.length >= 120) return;
+    if (collected.has(el) || !eligibleElement(el) || (!allowOverwrite && !includeExisting && fieldHasValue(el))) return;
+    if (fields.length >= MAX_FIELDS) throw new Error(`页面字段超过 ${MAX_FIELDS} 个，请分区填写`);
     collected.add(el);
 
     const componentType = detectComponentType(el);
@@ -189,7 +201,8 @@
       placeholder: getPlaceholder(el),
       name: el.name || el.getAttribute('name') || el.getAttribute('formcontrolname') || '',
       contextText: getContextText(el),
-      required: isRequired(el)
+      required: isRequired(el), hasValue: fieldHasValue(el),
+      ...fieldContexts.get(el)
     };
 
     // 采集可选项
@@ -210,7 +223,8 @@
     const hasOptions = field.options && field.options.length > 0;
     if (hasStrong || (field.contextText && hasOptions)) {
       fields.push(field);
-      fieldRegistry.set(field.id, { element: el, fingerprint: fingerprint(el), componentType });
+      fieldRegistry.set(field.id, { element: el, fingerprint: fingerprint(el), componentType,
+        context: fieldContexts.get(el) });
     }
   }
 
@@ -308,7 +322,10 @@
 
     const usable = collectFieldsForDetection().filter(d => !d.isSearchLike);
     // 全是"添加"按钮的空表单（如初始为空的 B 站简历页）也是简历表单
-    if (usable.length === 0) return false;
+    if (usable.length === 0) {
+      const sections = new Set(sectionAgent.detectable(sectionHooks()));
+      return pageNeg === 0 && (sections.size >= 2 || (sections.size >= 1 && urlStrong > 0));
+    }
 
     let fStrong = 0, fMedium = 0, fNeg = 0;
     for (const d of usable) {
@@ -397,7 +414,7 @@
   }
 
   // ===== 填充执行 =====
-  async function executeFill(mappings, onProgress) {
+  async function executeFill(mappings, onProgress, auditFieldIds = []) {
     let count = 0;
     const total = mappings.length;
     const batchToken = activeScanToken;
@@ -442,7 +459,9 @@
       await sleep(150);
     }
 
-    return { filled: count, skipped: total - count };
+    const result = { filled: count, skipped: total - count };
+    if (auditFieldIds.length) result.readback = readValues(auditFieldIds);
+    return result;
   }
 
   async function fillByType(el, value, componentType, fieldId) {
@@ -463,8 +482,10 @@
 
   function fillNativeInput(el, value) {
     let v = String(value);
-    // 原生 date 输入框只接受 YYYY-MM-DD：简历常见 YYYY-MM，补 "-01" 避免被浏览器置空
-    if (el.tagName.toLowerCase() === 'input' && el.type === 'date' && /^\d{4}-\d{1,2}$/.test(v)) v += '-01';
+    const date = /^(\d{4})[-/.年](\d{1,2})(?:[-/.月](\d{1,2}))?月?日?$/.exec(v.trim());
+    if (date && el.type === 'month') v = `${date[1]}-${date[2].padStart(2, '0')}`;
+    // A date control requires a day; month-only information uses the first day for that widget.
+    if (date && el.type === 'date') v = `${date[1]}-${date[2].padStart(2, '0')}-${(date[3] || '01').padStart(2, '0')}`;
     const proto = el.tagName.toLowerCase() === 'textarea'
       ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
@@ -1060,9 +1081,31 @@
   }
 
   // ===== 工具函数 =====
-  function findElement(fieldId) {
+  function currentFieldContexts() {
+    return sectionAgent.inspect(scanFieldElements().filter(eligibleElement), sectionHooks()).fields;
+  }
+  function findElement(fieldId, current = currentFieldContexts()) {
     const record = fieldRegistry.get(fieldId);
-    return record && eligibleElement(record.element) && fingerprint(record.element) === record.fingerprint ? record.element : null;
+    if (!record || !eligibleElement(record.element) || fingerprint(record.element) !== record.fingerprint) return null;
+    const context = current.get(record.element);
+    if (!context || context.section !== record.context.section || context.sectionRoot !== record.context.sectionRoot
+      || context.recordIndex !== record.context.recordIndex || context.recordRoot !== record.context.recordRoot) return null;
+    return record.element;
+  }
+  function readValues(fieldIds) {
+    const current = currentFieldContexts();
+    return fieldIds.map(fieldId => {
+      const el = findElement(fieldId, current);
+      if (!el) return { fieldId, unavailable: true };
+      let value = '';
+      if (el.tagName === 'SELECT') value = el.selectedIndex >= 0 ? el.options[el.selectedIndex]?.textContent || '' : '';
+      else if (typeof el.value === 'string') value = el.value;
+      else {
+        const input = el.querySelector('input:not([type="hidden"]),textarea');
+        value = input?.value || getDropdownDisplayValue(el) || (el.isContentEditable ? el.textContent : '') || '';
+      }
+      return { fieldId, value: value.slice(0, 20000), truncated: value.length > 20000 };
+    });
   }
   function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms)).then(() => {
@@ -1090,6 +1133,7 @@
     activeScanToken = null;
     prepared = false;
     fieldRegistry.clear();
+    fieldContexts.clear();
     stopDetection();
   }
   function startDetection(token) {
@@ -1127,23 +1171,56 @@
     }
     if (!activeScanToken || message.scanToken !== activeScanToken) { sendResponse({ error: '本页检测未开启或已取消' }); return false; }
     if (message.type === 'STOP_SCAN') { stopAll(); sendResponse({ stopped: true }); return false; }
+    if (message.type === 'ENSURE_RECORDS') {
+      if (running || !message.targets || typeof message.targets !== 'object' || Array.isArray(message.targets)
+        || Object.entries(message.targets).some(([key, value]) => !globalThis.__resumeSemantics.repeated.includes(key)
+          || !Number.isInteger(value) || value < 0 || value > (key === 'employment' ? 40 : 20))) {
+        sendResponse({ error: '添加条目请求无效' }); return false;
+      }
+      running = true;
+      prepared = false;
+      fieldRegistry.clear();
+      fieldContexts.clear();
+      const token = activeScanToken;
+      sectionAgent.ensureRecords(message.targets, sectionHooks(token)).then(reports => {
+        running = false; sendResponse({ reports });
+      }).catch(() => { running = false; sendResponse({ error: '添加已中断，请检查网页中的空条目' }); });
+      return true;
+    }
     if (message.type === 'PREPARE_FIELDS') {
       if (running) { sendResponse({ error: '正在填写' }); return false; }
       allowOverwrite = message.overwrite === true;
-      const fields = collectFields();
-      prepared = true;
-      sendResponse({ fields: fields.map(({ id, label, placeholder, name, componentType }) => ({ id, label, placeholder, name, componentType })) });
+      includeExisting = message.includeExisting === true;
+      try {
+        const fields = collectFields();
+        prepared = true;
+        sendResponse({ fields: fields.map(({ id, label, placeholder, name, componentType, section, sectionLabel, recordIndex, hasValue }) =>
+          ({ id, label, placeholder, name, componentType, section, sectionLabel, recordIndex, hasValue })) });
+      } catch (error) { prepared = false; sendResponse({ error: error.message }); }
+      return false;
+    }
+    if (message.type === 'READ_VALUES') {
+      if (running || !prepared || !Array.isArray(message.fieldIds) || message.fieldIds.length > MAX_FIELDS
+        || new Set(message.fieldIds).size !== message.fieldIds.length || message.fieldIds.some(id => !fieldRegistry.has(id))) {
+        sendResponse({ error: '校对范围无效' }); return false;
+      }
+      sendResponse({ values: readValues(message.fieldIds) });
       return false;
     }
     if (message.type === 'APPLY_FIELDS') {
-      if (running || !prepared || !Array.isArray(message.mappings) || message.mappings.length > 120 ||
+      const auditFieldIds = message.auditFieldIds || [];
+      if (running || !prepared || !Array.isArray(message.mappings) || message.mappings.length > MAX_FIELDS ||
+          !Array.isArray(auditFieldIds) || auditFieldIds.length > MAX_FIELDS || new Set(auditFieldIds).size !== auditFieldIds.length
+          || auditFieldIds.some(id => !fieldRegistry.has(id)) ||
           message.mappings.some(m => !fieldRegistry.has(m.fieldId) || typeof m.value !== 'string' || m.value.length > 20000 || fieldRegistry.get(m.fieldId).componentType !== m.componentType)) {
         sendResponse({ error: '填写预览无效，请重新检测' }); return false;
       }
       running = true;
       prepared = false;
       allowOverwrite = message.overwrite === true;
-      executeFill(message.mappings).then(sendResponse).catch(() => sendResponse({ error: '填写中断，请检查已填写字段' })).finally(() => { running = false; stopAll(); });
+      executeFill(message.mappings, null, auditFieldIds).then(result => {
+        running = false; stopAll(); sendResponse(result);
+      }).catch(() => { running = false; stopAll(); sendResponse({ error: '填写中断，请检查已填写字段' }); });
       return true;
     }
     return false;
