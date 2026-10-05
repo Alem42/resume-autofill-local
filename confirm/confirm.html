@@ -26,6 +26,12 @@
   </section>
   <section id="after-review" class="card" hidden><h2>填写后的内容校对</h2><p class="muted">AI 校对不等于事实认证，请回到网页核对；需要修正时可重新检测或手动编辑。</p><div id="review-results"></div></section>
   <p id="status" class="status" role="status" aria-live="polite">正在载入…</p>
+  <details id="diagnostic-panel" class="card" hidden>
+    <summary>本机匹配诊断</summary>
+    <p id="diagnostic-summary"></p>
+    <p class="muted">诊断只含字段编号、资料编号、分类、条目序号和拦截原因，不含个人资料值、网页字段原文、网址、API Key 或模型原始回复。只保存在本次浏览器会话，不会自动上传。</p>
+    <button id="export-diagnostic" type="button">导出诊断 JSON</button>
+  </details>
   <div class="actions"><button id="cancel" type="button">取消并关闭本页检测</button></div>
   <script type="module" src="confirm.js"></script>
 </main></body></html>

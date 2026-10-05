@@ -201,7 +201,7 @@ test('后台意外重启后不自动重试匹配或继续填写', async () => {
     const restarted = createController(f.api, () => { throw new Error('must not call API'); });
     const confirmation = await restarted.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, flow.sender);
     assert.equal(confirmation.status, state === 'matching' ? 'detected' : 'error');
-    assert.ok(confirmation.error.includes('重新启动'));
+    assert.ok(confirmation.flowError.includes('重新启动'));
     assert.equal(f.requests.length, 0);
     assert.equal(f.outgoing.some(item => item.message?.type === 'APPLY_FIELDS'), false);
   }
@@ -321,4 +321,58 @@ test('大页面分批匹配且每个字段只出现一次，每批不超过60个
   const preview = await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false }, flow.sender);
   assert.equal(f.requests.length, 3); assert.equal(preview.mappings.length, 121);
   assert.equal(new Set(preview.mappings.map(mapping => mapping.fieldId)).size, 121);
+});
+
+test('失败映射的诊断可在确认与设置页读取；网页和其他窗口不能读取，且不包含私人内容', async () => {
+  const profile = normalizeProfile({ education: [{ school: 'PRIVATE_SCHOOL', startDate: '2020-09', endDate: '2024-06' }] });
+  const sources = profileSources(profile), start = sources.find(source => source.fieldKey === 'startDate'), end = sources.find(source => source.fieldKey === 'endDate');
+  const fields = [{ id: 'F0', section: 'education', recordIndex: 0, label: '开始时间', name: 'PRIVATE_WEB_NAME', sectionLabel: 'PRIVATE_HEADING', componentType: 'native-input' },
+    { id: 'F1', section: 'education', recordIndex: 0, label: '结束时间', componentType: 'native-input' }];
+  const f = fixture({ profile, fields, fetcher: async () => modelResponse({ mappings: [{ fieldId: 'F0', sourceId: end.id }] }) });
+  const flow = await f.detect();
+  await assert.rejects(f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: sources.map(source => source.id), aiAssist: true, overwrite: false }, flow.sender), /F0.*开始时间.*结束时间/);
+  const { diagnostic } = await f.controller.handle({ type: 'GET_DIAGNOSTICS', requestId: flow.requestId }, flow.sender);
+  assert.equal(diagnostic.rejection.reason, 'field_mismatch');
+  assert.deepEqual(diagnostic.rejection.allowedSourceIds, [start.id]);
+  assert.equal(diagnostic.options.aiAssist, true);
+  const text = JSON.stringify(diagnostic);
+  assert.equal(/PRIVATE_|DUMMY_DEEPSEEK_KEY|jobs.example|2020-09|2024-06|开始时间|结束时间/.test(text), false);
+  assert.equal(f.outgoing.some(item => item.message?.type === 'APPLY_FIELDS'), false);
+  const preview = await f.controller.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, flow.sender);
+  assert.deepEqual(preview.diagnostic, diagnostic); assert.ok(preview.flowError.includes('F0')); assert.equal(preview.error, undefined);
+  for (const sender of [page, popup, { ...flow.sender, tab: { id: 999 } }]) {
+    await assert.rejects(f.controller.handle({ type: 'GET_DIAGNOSTICS', requestId: flow.requestId }, sender));
+  }
+  await f.controller.handle({ type: 'CANCEL_CONFIRMATION', requestId: flow.requestId }, flow.sender);
+  assert.deepEqual((await f.controller.handle({ type: 'GET_DIAGNOSTICS' }, options)).diagnostic, diagnostic);
+});
+
+test('发送给模型的每字段候选编号已经通过本地校验，无法判断的字段候选为空', async () => {
+  const profile = normalizeProfile({ basic: { name: 'PRIVATE_NAME' }, education: [{ school: 'PRIVATE_SCHOOL' }], work: [{ company: 'PRIVATE_COMPANY' }] });
+  const sources = profileSources(profile);
+  const fields = [{ id: 'F0', section: 'basic', label: '姓名', componentType: 'native-input' },
+    { id: 'F1', section: 'education', recordIndex: 0, label: '学校名称', componentType: 'native-input' },
+    { id: 'F2', section: 'work', recordIndex: 0, label: '公司名称', componentType: 'native-input' },
+    { id: 'F3', section: 'unknown', label: '开始时间', componentType: 'native-input' }];
+  const f = fixture({ profile, fields, fetcher: async (url, init) => {
+    const input = JSON.parse(JSON.parse(init.body).messages[1].content);
+    assert.deepEqual(input.fields.map(field => field.allowedSourceIds), [[sources[0].id], [sources[1].id], [sources[2].id], []]);
+    assert.equal(init.body.includes('PRIVATE_'), false);
+    return modelResponse({ mappings: input.fields.slice(0, 3).map(field => ({ fieldId: field.id, sourceId: field.allowedSourceIds[0] })) });
+  } });
+  const flow = await f.detect();
+  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: sources.map(source => source.id), overwrite: false }, flow.sender);
+  const { diagnostic } = await f.controller.handle({ type: 'GET_DIAGNOSTICS' }, options);
+  assert.equal(diagnostic.status, 'preview'); assert.equal(diagnostic.counts.matched, 3);
+});
+
+test('格式异常和接口失败只记录固定诊断代码，不记录模型回复或错误正文', async () => {
+  const f = fixture({ fetcher: async () => modelResponse({ mappings: [{ fieldId: 'F0', sourceId: 'S0', PRIVATE_REPLY: 'PRIVATE_RESPONSE' }] }) });
+  assert.equal((await f.controller.handle({ type: 'GET_DIAGNOSTICS' }, options)).diagnostic, null);
+  const flow = await f.detect();
+  await assert.rejects(f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false }, flow.sender));
+  const { diagnostic } = await f.controller.handle({ type: 'GET_DIAGNOSTICS' }, options);
+  assert.equal(diagnostic.failureCode, 'MATCH_FAILED');
+  assert.equal(/PRIVATE_|DUMMY_DEEPSEEK_KEY/.test(JSON.stringify(diagnostic)), false);
+  assert.equal(diagnostic.rejection, undefined);
 });

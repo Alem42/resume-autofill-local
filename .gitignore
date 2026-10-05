@@ -16,6 +16,7 @@ Thumbs.db
 
 # Personal backups and local secrets
 personal-profile*.json
+resume-autofill-diagnostic*.json
 .env
 .env.*
 !.env.example

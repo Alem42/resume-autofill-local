@@ -1,6 +1,7 @@
 import { API_URL, DEFAULT_MODEL, MODELS, PROFILE_SCHEMA, TEXT_FIELDS,
   normalizeProfile, profileSources, selectedSources, recordTargets, sourceAllowed,
-  normalizeFields, validateMatches, validateReviews, FIELD_BATCH_SIZE } from './profile.js';
+  normalizeFields, validateMatches, validateReviews, FIELD_BATCH_SIZE,
+  MappingValidationError, fieldDiagnostic, sourceDiagnostic } from './profile.js';
 
 const FLOW_TTL = 10 * 60 * 1000;
 const SYSTEM_PROMPT = `你只负责匹配简历表单的字段含义。默认只收到资料项名称；sources 有 value 时表示用户明确启用了辅助判断。
@@ -10,6 +11,7 @@ fields 的 section、recordIndex 标明网页区块和第几条经历（从0开�
 必须区分教育、工作、实习、项目、奖项、校园、科研、论文、专利、语言、证书等区块，不得跨区块或串条目。
 employment 是网站合并的实习/工作区块，使用 sources.employmentIndex。未知区块中的重复经历字段不要猜测。
 同类经历按用户资料列表顺序匹配；没有对应资料项时跳过，日期的开始和结束不得混淆。
+每个 field 的 allowedSourceIds 是该字段通过本地校验的候选资料编号，只能从该列表选择；空列表必须跳过。无法判断时跳过，不要勉强选择。
 不要编造资料，不要返回值、CSS选择器或代码。只返回 JSON 对象：
 {"mappings":[{"fieldId":"F0","sourceId":"S0"}]}。`;
 const REVIEW_PROMPT = `你是简历网申内容校对助手。用户明确允许发送本次选中的资料值和对应网页字段的已有值/填写结果。
@@ -209,6 +211,14 @@ export function createController(api, fetchApi = globalThis.fetch) {
         return { profile: config.profile, model: config.model, rememberKey: config.rememberKey,
           hasKey: Boolean(config.apiKey), migrationNotice: config.migrationNotice };
       }
+      case 'GET_DIAGNOSTICS': {
+        if (role(sender) === 'confirm') {
+          const flow = await currentFlow(sender, message.requestId);
+          return { diagnostic: flow.diagnostic || null };
+        }
+        requireRole(sender, 'options');
+        return { diagnostic: (await api.storage.session.get('lastDiagnostic')).lastDiagnostic || null };
+      }
       case 'SAVE_OPTIONS': {
         requireRole(sender, 'options');
         const profile = normalizeProfile(message.profile);
@@ -322,9 +332,10 @@ export function createController(api, fetchApi = globalThis.fetch) {
         const config = await settings();
         const selected = flow.sourceIds ? selectedSources(profileSources(config.profile), flow.sourceIds) : [];
         return { status: flow.status, url: flow.url, sources: profileSources(config.profile),
-          mappings: flow.mappings || [], result: flow.result, error: flow.error, overwrite: flow.overwrite,
+          mappings: flow.mappings || [], result: flow.result, flowError: flow.error, overwrite: flow.overwrite,
           aiAssist: flow.aiAssist, progress: flow.progress, addReports: flow.addReports || [],
           unmatched: flow.unmatched || [], reviews: flow.reviews || [], reviewError: flow.reviewError,
+          diagnostic: flow.diagnostic || null,
           choices: (flow.fields || []).map(field => ({ fieldId: field.id, section: field.section,
             sources: selected.filter(source => sourceAllowed(field, source, { manualUnknown: true })).map(({ id, label }) => ({ id, label })) })) };
       }
@@ -353,6 +364,10 @@ export function createController(api, fetchApi = globalThis.fetch) {
         flow.autoAdd = message.autoAdd === true;
         flow.sourceIds = message.sourceIds;
         flow.reviews = [];
+        flow.diagnostic = { schemaVersion: 1, extensionVersion: api.runtime.getManifest?.().version || 'development',
+          status: 'matching', stage: flow.autoAdd ? 'adding' : 'matching',
+          options: { aiAssist: flow.aiAssist, autoAdd: flow.autoAdd, overwrite: flow.overwrite },
+          counts: { sources: selected.length, fields: 0, matched: 0 }, fields: [], sources: selected.map(sourceDiagnostic) };
         delete flow.reviewError;
         flow.progress = { stage: flow.autoAdd ? 'adding' : 'matching', done: 0, total: 0 };
         await putFlow(flow);
@@ -368,12 +383,15 @@ export function createController(api, fetchApi = globalThis.fetch) {
             await isCurrent(flow, 'matching');
             await putFlow(flow);
           }
+          flow.diagnostic.stage = 'collecting';
           const collected = await send(flow, { type: 'PREPARE_FIELDS', overwrite: flow.overwrite, includeExisting: flow.aiAssist });
           if (collected?.error) throw new Error(collected.error);
           const fields = normalizeFields(collected?.fields);
           if (!fields.length) throw new Error('没有可填写的空字段；请先手动展开经历区块，或检查覆盖选项');
           await isCurrent(flow, 'matching');
           flow.fields = fields;
+          flow.diagnostic.fields = fields.map(fieldDiagnostic);
+          flow.diagnostic.counts.fields = fields.length;
           const mappings = [];
           const startedAt = Date.now();
           for (let offset = 0; offset < fields.length; offset += FIELD_BATCH_SIZE) {
@@ -382,12 +400,16 @@ export function createController(api, fetchApi = globalThis.fetch) {
             const batch = fields.slice(offset, offset + FIELD_BATCH_SIZE);
             const relevant = selected.filter(source => batch.some(field => sourceAllowed(field, source)));
             flow.progress = { stage: 'matching', done: offset, total: fields.length };
+            flow.diagnostic.stage = 'matching';
             await putFlow(flow);
             if (!relevant.length) continue;
             const reply = await requestModel([{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: JSON.stringify({
-              fields: batch, sources: sourcePayload(relevant, flow.aiAssist)
+              fields: batch.map(field => ({ ...field,
+                allowedSourceIds: relevant.filter(source => sourceAllowed(field, source)).map(source => source.id) })),
+              sources: sourcePayload(relevant, flow.aiAssist)
             }) }], config.model, config.apiKey, flow.requestId);
             mappings.push(...validateMatches(reply, batch, relevant));
+            flow.diagnostic.counts.matched = mappings.length;
           }
           if (!mappings.length && !fields.some(field => selected.some(source => sourceAllowed(field, source, { manualUnknown: true })))) {
             throw new Error('没有匹配到字段，请检查个人资料与页面表单');
@@ -395,6 +417,7 @@ export function createController(api, fetchApi = globalThis.fetch) {
           await isCurrent(flow, 'matching');
           flow.unmatched = fields.filter(field => !mappings.some(mapping => mapping.fieldId === field.id));
           if (flow.aiAssist) {
+            flow.diagnostic.stage = 'reviewing';
             flow.progress = { stage: 'reviewing', done: 0, total: mappings.length };
             await putFlow(flow);
             try {
@@ -409,14 +432,27 @@ export function createController(api, fetchApi = globalThis.fetch) {
           await isCurrent(flow, 'matching');
           flow.status = 'preview';
           flow.mappings = mappings;
+          flow.diagnostic.status = 'preview';
+          flow.diagnostic.stage = 'matching';
           await putFlow(flow);
+          await api.storage.session.set({ lastDiagnostic: flow.diagnostic });
           return { mappings, reviews: flow.reviews, reviewError: flow.reviewError,
             addReports: flow.addReports || [], unmatched: flow.unmatched, aiAssist: flow.aiAssist, overwrite: flow.overwrite };
         } catch (error) {
           const latest = await getFlow(flow.tabId);
           if (latest?.requestId === flow.requestId && latest.status === 'matching') {
             latest.status = 'detected';
+            latest.error = error.message;
+            flow.diagnostic.status = 'failed';
+            flow.diagnostic.failureCode = error instanceof MappingValidationError ? 'MAPPING_REJECTED' : 'MATCH_FAILED';
+            if (error instanceof MappingValidationError) {
+              const rejectedField = flow.fields.find(field => field.id === error.diagnostic.field.id);
+              flow.diagnostic.rejection = { ...error.diagnostic,
+                allowedSourceIds: selected.filter(source => sourceAllowed(rejectedField, source)).map(source => source.id) };
+            }
+            latest.diagnostic = flow.diagnostic;
             await putFlow(latest);
+            await api.storage.session.set({ lastDiagnostic: flow.diagnostic });
           }
           throw error;
         } finally { busy.delete(flow.requestId); }

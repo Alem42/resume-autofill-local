@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "简历填写助手 · 手动确认",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "minimum_chrome_version": "120",
   "description": "个人资料保存在本机；手动检测当前页面，预览确认后填写。",
   "permissions": ["storage", "activeTab", "scripting"],

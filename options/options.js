@@ -1,5 +1,5 @@
 import { PROFILE_SCHEMA, TEXT_FIELDS, SENSITIVE_KEYS, MAX_ENTRIES, normalizeProfile } from '../shared/profile.js';
-import { send, element, status, onClick } from '../shared/ui.js';
+import { send, element, status, onClick, downloadJSON } from '../shared/ui.js';
 
 const containers = new Map();
 const longFields = new Set(['description', 'awards', 'publications', 'responsibilities', 'achievements', 'coreCourses', 'authors', 'leavingReason']);
@@ -140,13 +140,13 @@ onClick('clear-key', async () => {
   status('已移除本机和会话中的密钥');
 });
 onClick('export-profile', () => {
-  const blob = new Blob([JSON.stringify(collect(), null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const link = element('a');
-  link.href = url;
-  link.download = 'personal-profile.json';
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadJSON(collect(), 'personal-profile.json');
+});
+onClick('export-diagnostic', async () => {
+  const { diagnostic } = await send({ type: 'GET_DIAGNOSTICS' });
+  if (!diagnostic) throw new Error('暂无诊断，请先在招聘页手动检测并进行一次字段匹配');
+  downloadJSON(diagnostic, 'resume-autofill-diagnostic.json');
+  status('诊断已导出，仅包含编号、分类和拦截原因');
 });
 onClick('import-profile', () => document.getElementById('import-file').click());
 document.getElementById('import-file').addEventListener('change', async event => {

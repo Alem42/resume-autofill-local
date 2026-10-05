@@ -1,5 +1,5 @@
-import { send, element, status, onClick } from '../shared/ui.js';
-import { PROFILE_SCHEMA, selectedSources, recordTargets } from '../shared/profile.js';
+import { send, element, status, onClick, downloadJSON } from '../shared/ui.js';
+import { PROFILE_SCHEMA, selectedSources, recordTargets, diagnosticReason } from '../shared/profile.js';
 const requestId = new URL(location.href).searchParams.get('requestId');
 let polling = null;
 let state = '';
@@ -99,6 +99,11 @@ function preview(data) {
 async function refresh() {
   const data = await send({ type: 'GET_CONFIRMATION', requestId });
   document.getElementById('target-site').textContent = data.url;
+  const diagnostic = data.diagnostic;
+  document.getElementById('diagnostic-panel').hidden = !diagnostic;
+  if (diagnostic) document.getElementById('diagnostic-summary').textContent = diagnostic.rejection
+    ? diagnosticReason(diagnostic.rejection)
+    : `已识别 ${diagnostic.counts.fields} 个字段，匹配 ${diagnostic.counts.matched} 个。${diagnostic.status === 'failed' ? '本次匹配失败，诊断中没有保存模型回复或错误正文。' : ''}`;
   if (data.status === 'preview' && state !== 'preview') preview(data);
   else if (data.status === 'detected' && state !== 'detected') {
     state = 'detected'; currentData = data;
@@ -116,7 +121,7 @@ async function refresh() {
         savedSelection ? savedSelection.includes(source.id) : !source.sensitive, source.sensitive));
     }
     summary();
-    status(data.error || '默认不开启 AI 内容上传。请核对资料范围与自动添加选项后继续。', Boolean(data.error));
+    status(data.flowError || '默认不开启 AI 内容上传。请核对资料范围与自动添加选项后继续。', Boolean(data.flowError));
   } else if (['matching', 'applying', 'auditing'].includes(data.status)) {
     state = data.status;
     document.getElementById('selection').hidden = true;
@@ -128,7 +133,7 @@ async function refresh() {
     clearTimeout(polling);
     polling = setTimeout(() => refresh().catch(error => status(error.message, true)), 1000);
   } else if (data.status === 'completed') finish(data.result);
-  else if (data.status === 'error') { clearTimeout(polling); status(data.error, true); }
+  else if (data.status === 'error') { clearTimeout(polling); status(data.flowError, true); }
 }
 function finish(result) {
   clearTimeout(polling); state = 'completed';
@@ -178,5 +183,10 @@ onClick('cancel', async () => {
   clearTimeout(polling);
   try { await send({ type: 'CANCEL_CONFIRMATION', requestId }); }
   finally { window.close(); }
+});
+onClick('export-diagnostic', async () => {
+  const { diagnostic } = await send({ type: 'GET_DIAGNOSTICS', requestId });
+  if (!diagnostic) throw new Error('暂无诊断，请先进行一次字段匹配');
+  downloadJSON(diagnostic, 'resume-autofill-diagnostic.json');
 });
 refresh().catch(error => status(error.message, true));

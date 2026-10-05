@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { domFixture } from './dom-fixture.js';
-import { PROFILE_SCHEMA, selectedSources, recordTargets, profileSources, normalizeProfile } from '../shared/profile.js';
+import { PROFILE_SCHEMA, selectedSources, recordTargets, profileSources, normalizeProfile, diagnosticReason } from '../shared/profile.js';
 
 // Exercise the real confirmation UI against a small DOM adapter and a mock worker.
 async function confirmation(data, handler) {
-  const f = domFixture(), requests = [], nodes = new Map();
+  const f = domFixture(), requests = [], nodes = new Map(), downloads = [];
   const proto = Object.getPrototypeOf(f.node('div'));
   for (const [key, attribute] of [['className', 'class'], ['type', 'type']]) {
     const getter = Object.getOwnPropertyDescriptor(proto, key).get;
@@ -31,9 +31,10 @@ async function confirmation(data, handler) {
     nodes.set(match[3], node); f.doc.body.append(node);
   }
   let current = structuredClone(data);
-  f.context.URL = URL;
+  f.context.Blob = class { constructor(parts) { this.text = parts.join(''); } };
+  f.context.URL = class extends URL { static createObjectURL(blob) { downloads.push(JSON.parse(blob.text)); return 'blob:diagnostic'; } static revokeObjectURL() {} };
   f.context.location.href = 'chrome-extension://testextensionid/confirm/confirm.html?requestId=request-1';
-  Object.assign(f.context, { PROFILE_SCHEMA, selectedSources, recordTargets });
+  Object.assign(f.context, { PROFILE_SCHEMA, selectedSources, recordTargets, diagnosticReason });
   f.context.chrome.runtime.sendMessage = async message => {
     requests.push(structuredClone(message));
     if (message.type === 'GET_CONFIRMATION') return structuredClone(current);
@@ -47,7 +48,7 @@ async function confirmation(data, handler) {
   async function fire(node, type, trusted = true) {
     for (const listener of node.listeners?.[type] || []) await listener({ isTrusted: trusted, target: node, currentTarget: node });
   }
-  return { ...f, nodes, requests, fire };
+  return { ...f, nodes, requests, downloads, fire };
 }
 const mapping = (fieldId, extra = {}) => ({ fieldId, sourceId: 'S0', fieldLabel: '姓名', sourceLabel: '基本信息 / 姓名', value: 'LOCAL_DEMO', componentType: 'native-input', ...extra });
 
@@ -94,4 +95,22 @@ test('未识别区块可通过可信操作手动绑定授权资料，并更新�
   assert.equal(f.nodes.get('unmatched').children.length, 0);
   const request = f.requests.find(request => request.type === 'CHANGE_MAPPING');
   assert.equal(request.fieldId, 'F0'); assert.equal(request.sourceId, 'S0');
+});
+
+test('匹配失败时可见诊断并只导出后台返回的诊断数据，不导出确认页里的私人资料', async () => {
+  const diagnostic = { schemaVersion: 1, status: 'failed', counts: { fields: 2, matched: 0 },
+    rejection: { reason: 'record_mismatch', field: { id: 'F0', section: 'education', recordIndex: 0 },
+      source: { id: 'S2', section: 'education', recordIndex: 1 } } };
+  const f = await confirmation({ status: 'detected', url: 'https://jobs.example/private-path', sources: profileSources(normalizeProfile({ basic: { name: 'PRIVATE_NAME' } })),
+    flowError: '匹配失败', diagnostic }, message => message.type === 'GET_DIAGNOSTICS' ? { diagnostic } : { ok: true });
+  assert.equal(f.nodes.get('diagnostic-panel').hidden, false);
+  assert.ok(f.nodes.get('diagnostic-summary').textContent.includes('第 1 条'));
+  assert.ok(f.nodes.get('diagnostic-summary').textContent.includes('第 2 条'));
+  await f.fire(f.nodes.get('export-diagnostic'), 'click', false);
+  assert.equal(f.downloads.length, 0);
+  await f.fire(f.nodes.get('export-diagnostic'), 'click');
+  assert.deepEqual(f.downloads, [diagnostic]);
+  const request = f.requests.find(request => request.type === 'GET_DIAGNOSTICS');
+  assert.equal(request.requestId, 'request-1');
+  assert.equal(/PRIVATE_|private-path/.test(JSON.stringify(f.downloads)), false);
 });

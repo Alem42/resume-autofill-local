@@ -23,6 +23,11 @@
     <div class="actions"><button id="export-profile" type="button">导出个人信息 JSON</button><button id="import-profile" type="button">导入个人信息 JSON</button><button id="clear-profile" class="danger" type="button">清空个人信息</button></div>
     <input id="import-file" type="file" accept="application/json,.json" hidden>
   </section>
+  <section class="card">
+    <h2>填写问题诊断</h2>
+    <p class="muted">导出最近一次字段匹配的分类、编号和拦截原因。不包含个人资料值、网页字段原文、网址、API Key 或模型原始回复，只在浏览器会话中保留。</p>
+    <button id="export-diagnostic" type="button">导出最近一次诊断 JSON</button>
+  </section>
   <div class="sticky"><div class="actions"><button id="save-options" class="primary" type="button">保存个人信息与设置</button><span id="status" class="status" role="status" aria-live="polite"></span></div></div>
   <script type="module" src="options.js"></script>
 </main></body></html>

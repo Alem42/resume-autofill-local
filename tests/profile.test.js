@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
-import { normalizeProfile, profileSources, selectedSources, recordTargets, normalizeFields, validateMatches, validateReviews, API_URL } from '../shared/profile.js';
+import { normalizeProfile, profileSources, selectedSources, recordTargets, normalizeFields, validateMatches, validateReviews, API_URL, MappingValidationError, diagnosticReason } from '../shared/profile.js';
 
 test('个人信息导入拒绝接口、密钥、未知字段与原型污染', () => {
   for (const data of [{ llm: { baseUrl: 'https://evil.invalid', apiKey: 'SECRET' } },
@@ -122,4 +122,29 @@ test('公开演示资料可按白名单导入且没有真实联系方式或密�
   assert.equal(profile.education.length, 2); assert.equal(profile.projects.length, 3);
   assert.ok(profile.basic.email.endsWith('@example.invalid')); assert.equal(profile.basic.idCard, '');
   assert.equal(/apiKey|secret|sk-[A-Za-z0-9]/.test(raw), false);
+});
+
+test('映射拦截提供准确的区块、条目和字段原因，诊断不包含网页原文或资料值', () => {
+  const selected = selectedSources(profileSources(normalizeProfile({ education: [
+    { school: 'PRIVATE_SCHOOL_A', startDate: '2020-09', endDate: '2024-06' }, { school: 'PRIVATE_SCHOOL_B' }
+  ], work: [{ company: 'PRIVATE_COMPANY' }] })), ['S0', 'S1', 'S2', 'S3', 'S4']);
+  const cases = [
+    { section: 'education', recordIndex: 0, label: '学校名称', sourceKey: 'work.0.company', reason: 'section_mismatch' },
+    { section: 'education', recordIndex: 0, label: '学校名称', sourceKey: 'education.1.school', reason: 'record_mismatch' },
+    { section: 'education', recordIndex: 0, label: '开始时间', sourceKey: 'education.0.endDate', reason: 'field_mismatch' },
+    { section: 'education', recordIndex: null, label: '学校名称', sourceKey: 'education.0.school', reason: 'unknown_record' },
+    { section: 'unknown', recordIndex: null, label: 'PRIVATE_WEB_LABEL', sourceKey: 'education.0.school', reason: 'unknown_section' }
+  ];
+  for (const item of cases) {
+    const field = normalizeFields([{ id: 'F0', componentType: 'native-input', name: 'PRIVATE_WEB_NAME', sectionLabel: 'PRIVATE_SECTION_TITLE', ...item }])[0];
+    const source = selected.find(source => source.key === item.sourceKey);
+    assert.throws(() => validateMatches(JSON.stringify({ mappings: [{ fieldId: 'F0', sourceId: source.id }] }), [field], selected), error => {
+      assert.ok(error instanceof MappingValidationError);
+      assert.equal(error.diagnostic.reason, item.reason);
+      assert.equal(error.diagnostic.field.id, 'F0');
+      assert.equal(/PRIVATE_|2020-09|2024-06/.test(JSON.stringify(error.diagnostic) + error.message), false);
+      assert.ok(diagnosticReason(error.diagnostic).startsWith('F0：'));
+      return true;
+    });
+  }
 });

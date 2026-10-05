@@ -199,22 +199,61 @@ export function recordTargets(sources) {
   return targets;
 }
 
-export function sourceAllowed(field, source, { manualUnknown = false } = {}) {
+export function sourceConflict(field, source, { manualUnknown = false } = {}) {
   const section = field.section || semantics.inferSection([field.label, field.name, field.placeholder].join(' '));
   if (section === 'employment') {
-    if (!['work', 'internships'].includes(source.section)) return false;
+    if (!['work', 'internships'].includes(source.section)) return 'section_mismatch';
   } else if (section !== 'unknown' && section !== source.section && !(section === 'languageCertificates' && source.key === 'languages')
-    && !(section === 'professionalCertificates' && source.key === 'certificates')) return false;
-  else if (section === 'unknown' && source.recordIndex !== null && !manualUnknown) return false;
+    && !(section === 'professionalCertificates' && source.key === 'certificates')) return 'section_mismatch';
+  else if (section === 'unknown' && source.recordIndex !== null && !manualUnknown) return 'unknown_section';
   if (source.recordIndex !== null) {
-    if (field.recordIndex == null && !(section === 'unknown' && manualUnknown)) return false;
+    if (field.recordIndex == null && !(section === 'unknown' && manualUnknown)) return 'unknown_record';
     const index = section === 'employment' ? source.employmentIndex : source.slotIndex ?? source.recordIndex;
-    if (field.recordIndex !== index && !(section === 'unknown' && manualUnknown)) return false;
+    if (field.recordIndex !== index && !(section === 'unknown' && manualUnknown)) return 'record_mismatch';
   }
   const kind = semantics.fieldKind(field.label || field.name || field.placeholder, section);
-  if (kind === 'degree' && section === 'basic' && source.fieldKey === 'highestDegree') return true;
-  if (kind === 'expectedGraduationDate' && source.section === 'education' && source.fieldKey === 'endDate') return /^\d{4}[-/.]\d{1,2}$/.test(source.value);
-  return !kind || source.fieldKey === kind;
+  if (kind === 'degree' && section === 'basic' && source.fieldKey === 'highestDegree') return null;
+  if (kind === 'expectedGraduationDate' && source.section === 'education' && source.fieldKey === 'endDate') {
+    return /^\d{4}[-/.]\d{1,2}$/.test(source.value) ? null : 'graduation_month_required';
+  }
+  return !kind || source.fieldKey === kind ? null : 'field_mismatch';
+}
+export function sourceAllowed(field, source, options) {
+  return sourceConflict(field, source, options) === null;
+}
+
+export function fieldDiagnostic(field) {
+  return { id: field.id, section: field.section, recordIndex: field.recordIndex,
+    componentType: field.componentType, hasValue: field.hasValue,
+    kind: semantics.fieldKind(field.label || field.name || field.placeholder, field.section) };
+}
+export function sourceDiagnostic(source) {
+  return { id: source.id, section: source.section, recordIndex: source.slotIndex ?? source.recordIndex,
+    employmentIndex: source.employmentIndex ?? null, fieldKey: source.fieldKey };
+}
+export function diagnosticReason(detail) {
+  const field = detail.field, source = detail.source;
+  const title = (section, key) => PROFILE_SCHEMA[section]?.fields[key] || TEXT_FIELDS[key] || key;
+  const slot = index => index == null ? '条目未知' : `第 ${index + 1} 条`;
+  const from = `${semantics.titles[field.section]} / ${slot(field.recordIndex)}`;
+  const to = `${semantics.titles[source.section]} / ${slot(field.section === 'employment' ? source.employmentIndex : source.recordIndex)}`;
+  const reasons = {
+    section_mismatch: `网页识别为${from}，模型选择了${to}`,
+    record_mismatch: `网页是${from}，模型选择了${to}`,
+    unknown_section: '网页经历区块未识别，不能自动选择多条经历资料',
+    unknown_record: '网页经历条目编号未识别，不能自动对应个人经历',
+    field_mismatch: `字段含义要求“${title(field.section, field.kind)}”，模型选择了“${title(source.section, source.fieldKey)}”`,
+    graduation_month_required: '预计毕业时间需要明确的毕业年月'
+  };
+  return `${field.id}：${reasons[detail.reason] || '对应关系未通过校验'}`;
+}
+export class MappingValidationError extends Error {
+  constructor(field, source, reason) {
+    const diagnostic = { reason, field: fieldDiagnostic(field), source: sourceDiagnostic(source) };
+    super(`模型把资料映射到了错误的经历区块、条目或字段；已阻止填写（${diagnosticReason(diagnostic)}）`);
+    this.name = 'MappingValidationError';
+    this.diagnostic = diagnostic;
+  }
 }
 
 const TYPES = new Set(['native-input', 'native-select', 'contenteditable', 'wrapper-input', 'custom-dropdown', 'custom-datepicker', 'custom-interactive']);
@@ -248,7 +287,8 @@ export function validateMatches(reply, fields, sources, { manualUnknown = false 
     const field = fieldMap.get(mapping.fieldId);
     const source = sourceMap.get(mapping.sourceId);
     if (!field || !source || seen.has(field.id)) throw new Error('模型引用了未授权或重复的资料项');
-    if (!sourceAllowed(field, source, { manualUnknown })) throw new Error('模型把资料映射到了错误的经历区块、条目或字段；已阻止填写');
+    const conflict = sourceConflict(field, source, { manualUnknown });
+    if (conflict) throw new MappingValidationError(field, source, conflict);
     seen.add(field.id);
     return { fieldId: field.id, sourceId: source.id, fieldLabel: field.label || field.placeholder || field.name || field.id,
       section: field.section, recordIndex: field.recordIndex, hasValue: field.hasValue,
