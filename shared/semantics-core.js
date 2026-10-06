@@ -60,7 +60,7 @@
     return Object.entries(aliases).find(([, pattern]) => pattern.test(value))?.[0] || 'unknown';
   }
   function inferSection(text) {
-    const value = compact(text);
+    const value = compact(text).replace(/^(?:请输入|请填写|请选择)/, '');
     if (value === '最高学历') return 'basic';
     if (/^(专业技能|技能|自我评价|自我介绍|兴趣爱好|补充信息|skills|selfevaluation)$/.test(value)) return 'other';
     if (/预计毕业|预期毕业|expectedgraduation/.test(value)) return 'basic';
@@ -72,7 +72,7 @@
     if (/论文题目|论文名称|期刊名称|papertitle|publicationtitle/.test(value)) return 'publications';
     if (/专利名称|专利号|patent/.test(value)) return 'patents';
     if (/期望职位|期望薪资|期望城市|意向城市|意向职位/.test(value)) return 'jobIntention';
-    if (/^(?:请输入|请填写|请选择)?(?:姓名|性别|手机号|手机号码|联系电话|邮箱|电子邮箱|出生日期|出生年月|现居城市|所在城市|籍贯|民族|政治面貌|name|email|phone|mobile|gender|birthday)$/.test(value)) return 'basic';
+    if (/^(?:姓名|中文姓名|性别|手机号|手机号码|联系电话|邮箱|电子邮箱|电子邮件|出生日期|出生年月|现居城市|所在城市|籍贯|民族|政治面貌|微信号|证件号码|身份证号|证件类型|国家\/地区|国籍|name|email|phone|mobile|gender|birthday)$/.test(value)) return 'basic';
     return 'unknown';
   }
   const anchors = {
@@ -89,6 +89,11 @@
     portfolio: /作品名称|作品名|portfolio.?name/i
   };
   const contextualFields = {
+    education: { college: /^(学院名称|学院|院系|学院\/院系)$/, majorCategory: /^(专业类别|专业大类|专业分类)$/,
+      degree: /^(学历层次|学历|最高学历|学历水平)$/, studyMode: /^(学习形式|学习方式|学习形式全日制等)$/,
+      isHighest: /^(是否为?最高学历)$/, isRegular: /^(是否统招)$/, doubleDegree: /^(是否双学位|双学位)$/,
+      ranking: /^(专业成绩排名|专业排名|成绩排名)$/, laboratory: /^(实验室|实验室名称)$/,
+      supervisor: /^(导师|导师姓名|指导老师)$/, researchDirection: /^(研究方向)$/ },
     awards: { name: /^(奖项名称|获奖名称|荣誉名称|awardname)$/, category: /^(奖项类别|获奖类别|奖项类型)$/,
       level: /^(奖项级别|获奖级别|荣誉级别)$/, rank: /^(奖项等级|获奖等级|奖励等级|奖项等次)$/,
       date: /^(获奖时间|获奖日期|获奖年月|awarddate)$/, description: /^(获奖内容|获奖事迹)$/ },
@@ -117,7 +122,9 @@
       nationality: /^(国籍|国家\/地区)$/, nativePlace: /^(籍贯)$/,
       ethnicity: /^(民族)$/, location: /^(所在城市|现居城市|现居住地|居住城市)$/,
       birthday: /^(出生日期|出生年月|出生时间|生日|birthday|dateofbirth)$/,
-      wechat: /^(微信|微信号)$/, idCard: /^(身份证号|身份证号码|证件号码)$/, interests: /^(兴趣爱好|爱好)$/
+      wechat: /^(微信|微信号)$/, idCard: /^(身份证号|身份证号码|证件号码)$/, idType: /^(证件类型|证件种类)$/,
+      hukou: /^(户籍|户籍所在地|户口所在地)$/, political: /^(政治面貌)$/, marital: /^(婚姻状况)$/,
+      interests: /^(兴趣爱好|爱好)$/
     };
     const basic = Object.entries(basicKeys).find(([, pattern]) => pattern.test(v));
     if (basic) return basic[0];
@@ -125,13 +132,13 @@
     if (/开始|入学|入职|起始|startdate|starttime/.test(v)) return 'startDate';
     if (/^(学校|学校名称|毕业院校|就读院校|school|schoolname|university)$/.test(v)) return 'school';
     if (/^(专业|专业名称|所学专业|major|majorname)$/.test(v)) return 'major';
-    if (/^(学历|最高学历|educationlevel|qualification)$/.test(v)) return 'degree';
+    if (/^(学历|学历层次|最高学历|educationlevel|qualification)$/.test(v)) return 'degree';
     if (/^(学位|学位名称|degreename)$/.test(v)) return 'degreeName';
     if (/^(公司|公司名称|工作单位|实习单位|company|companyname|employer)$/.test(v)) return 'company';
     if (/^(项目名称|项目名|projectname)$/.test(v)) return 'projectName';
     return null;
   }
   globalThis.__resumeSemantics = Object.freeze({ titles, section, headingSection, inferSection, fieldKind,
-    isAnchor: (key, text) => Boolean(anchors[key]?.test(String(text || ''))),
+    isAnchor: (key, text) => Boolean(anchors[key]?.test(String(text || '').replace(/^[\s*＊]+|[：:*＊\s?]+$/g, '').replace(/^(?:请输入|请选择|请填写)/, ''))),
     repeated: Object.freeze(Object.keys(anchors)) });
 })();

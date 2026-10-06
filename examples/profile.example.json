@@ -7,8 +7,8 @@
     "highestDegree": "硕士"
   },
   "education": [
-    { "school": "演示研究生大学（虚构）", "major": "计算机科学", "degree": "硕士", "degreeName": "工学硕士", "majorCategory": "工学", "startDate": "2024-09", "endDate": "2027-06" },
-    { "school": "演示本科大学（虚构）", "major": "软件工程", "degree": "本科", "degreeName": "工学学士", "majorCategory": "工学", "startDate": "2020-09", "endDate": "2024-06" }
+    { "school": "演示研究生大学（虚构）", "major": "计算机科学", "degree": "硕士", "degreeName": "工学硕士", "majorCategory": "工学", "startDate": "2024-09-13", "endDate": "2027-06-22", "isHighest": true, "isRegular": true, "doubleDegree": false },
+    { "school": "演示本科大学（虚构）", "major": "软件工程", "degree": "本科", "degreeName": "工学学士", "majorCategory": "工学", "startDate": "2020-09-07", "endDate": "2024-06-18", "isHighest": false, "isRegular": true, "doubleDegree": false }
   ],
   "internships": [
     { "company": "演示实习公司（虚构）", "position": "开发实习生", "startDate": "2025-07", "endDate": "2025-09", "description": "仅用于测试的实习描述。" }

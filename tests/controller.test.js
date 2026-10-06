@@ -235,7 +235,7 @@ test('完整流程按所选数量添加两段教育、三段项目和奖项，�
   } });
   const flow = await f.detect();
   assert.equal(dom.events.length, 0);
-  const sourceIds = profileSources(profile).filter(source => !source.sensitive).map(source => source.id);
+  const sourceIds = profileSources(profile).map(source => source.id);
   await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds, autoAdd: true, aiAssist: false, overwrite: false }, flow.sender);
   assert.equal(edu.list.children.length, 2); assert.equal(projects.list.children.length, 3); assert.equal(awards.list.children.length, 1);
   assert.ok(dom.doc.querySelectorAll('input,textarea').every(input => input.value === ''));
@@ -396,4 +396,58 @@ test('模糊模式允许未知经历进入预览，资料仍只从所选本地�
   assert.equal(diagnostic.warnings[0].reason, 'unknown_section'); assert.equal(JSON.stringify(diagnostic).includes('PRIVATE_'), false);
   await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0'] }, flow.sender);
   assert.equal(f.outgoing.find(item => item.message?.type === 'APPLY_FIELDS').message.mappings[0].value, 'PRIVATE_DEMO_SCHOOL');
+});
+
+test('截图所示 F3 其他信息映射到基本信息：模糊模式应进入待审核预览，严格模式才拦截', async () => {
+  for (const relaxed of [true, false]) {
+    const profile = normalizeProfile({ basic: { nativePlace: '演示籍贯' } });
+    const source = profileSources(profile)[0];
+    const f = fixture({ profile, fields: [{ id: 'F3', section: 'other', recordIndex: null, placeholder: '请选择', componentType: 'custom-dropdown' },
+      { id: 'F49', section: 'unknown', label: '备用字段', componentType: 'native-input' }],
+      fetcher: async () => modelResponse({ mappings: [{ fieldId: 'F3', sourceId: source.id }] }) });
+    const flow = await f.detect();
+    const operation = f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: [source.id], relaxed, overwrite: true }, flow.sender);
+    if (relaxed) {
+      const preview = await operation;
+      assert.equal(preview.mappings[0].fieldId, 'F3'); assert.equal(preview.mappings[0].needsReview, true);
+      assert.equal(preview.mappings[0].conflict, 'section_mismatch');
+      assert.equal((await f.controller.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, flow.sender)).status, 'preview');
+    } else await assert.rejects(operation, /F3.*其他信息.*基本信息/);
+    const { diagnostic } = await f.controller.handle({ type: 'GET_DIAGNOSTICS' }, options);
+    assert.equal(diagnostic.options.relaxed, relaxed);
+    assert.equal(diagnostic.status, relaxed ? 'preview' : 'failed');
+    assert.equal(f.outgoing.some(item => item.message?.type === 'APPLY_FIELDS'), false);
+  }
+});
+
+test('模型把第二段起止日期选成第一段时，明确的本机条目匹配优先纠正', async () => {
+  const profile = normalizeProfile({ education: [
+    { school: 'DEMO_SCHOOL_A', startDate: '2024-09-13', endDate: '2027-06-22' },
+    { school: 'DEMO_SCHOOL_B', startDate: '2020-09-07', endDate: '2024-06-18' }
+  ] });
+  const allSources = profileSources(profile);
+  const wrongSource = allSources.find(source => source.recordIndex === 0 && source.fieldKey === 'startDate');
+  const f = fixture({ profile, fields: [{ id: 'F16', label: '开始时间', componentType: 'custom-datepicker', section: 'education', recordIndex: 1 }],
+    fetcher: async () => ({ ok: true, async text() { return JSON.stringify({ choices: [{ message: { content: JSON.stringify({ mappings: [{ fieldId: 'F16', sourceId: wrongSource.id }] }) } }] }); } }) });
+  const flow = await f.detect();
+  const result = await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: allSources.map(source => source.id), relaxed: true, overwrite: false }, flow.sender);
+  assert.equal(result.mappings[0].value, '2020-09-07');
+  assert.equal(result.mappings[0].matchedBy, 'local');
+  assert.equal(f.requests.some(request => /DEMO_SCHOOL|2020-09-07/.test(request.init.body)), false);
+});
+
+test('完成后的诊断记录对应关系和实际执行状态，不保存字段标签或私人值', async () => {
+  const f = fixture({ pageHandler: message => {
+    if (message.type === 'PREPARE_FIELDS') return { fields: [{ id: 'F0', label: '姓名', componentType: 'native-input' }] };
+    if (message.type === 'APPLY_FIELDS') return { filled: 0, skipped: 1, outcomes: [{ fieldId: 'F0', status: 'skipped', reason: 'selection_not_committed', value: 'PRIVATE_BAD_VALUE' }] };
+    return { ok: true };
+  } });
+  const flow = await f.detect();
+  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false }, flow.sender);
+  await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0'] }, flow.sender);
+  const diagnostic = (await f.controller.handle({ type: 'GET_DIAGNOSTICS' }, options)).diagnostic;
+  assert.equal(diagnostic.status, 'completed');
+  assert.deepEqual(diagnostic.outcomes, [{ fieldId: 'F0', status: 'skipped', reason: 'selection_not_committed' }]);
+  assert.deepEqual(diagnostic.mappings, [{ fieldId: 'F0', sourceId: 'S0', matchedBy: 'local' }]);
+  assert.equal(/PRIVATE_|姓名/.test(JSON.stringify(diagnostic)), false);
 });

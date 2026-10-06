@@ -17,7 +17,7 @@ export const PROFILE_SCHEMA = {
       englishName: '英文姓名', nationality: '国籍', highestDegree: '最高学历',
       preferredName: '常用名', alternatePhone: '备用联系电话', jobStatus: '求职状态', currentSalary: '当前薪资',
       website: '个人网站', github: 'GitHub 地址', wechat: '微信号',
-      address: '详细地址', idCard: '身份证号', height: '身高', weight: '体重',
+      address: '详细地址', idType: '证件类型', idCard: '身份证号', height: '身高', weight: '体重',
       emergencyName: '紧急联系人姓名', emergencyPhone: '紧急联系人电话'
     }
   },
@@ -26,7 +26,7 @@ export const PROFILE_SCHEMA = {
       school: '学校', major: '专业', degree: '学历', degreeName: '学位名称', college: '学院 / 院系',
       country: '学校所在国家 / 地区', city: '学校所在城市', studyMode: '学习形式（全日制等）',
       majorCategory: '专业大类', researchDirection: '研究方向', supervisor: '导师',
-      duration: '学制', isRegular: '是否统招', isHighest: '是否最高学历',
+      duration: '学制', isRegular: '是否统招', isHighest: '是否最高学历', doubleDegree: '是否双学位', laboratory: '实验室',
       gpa: 'GPA / 排名', startDate: '开始时间', endDate: '结束时间',
       ranking: '专业排名', coreCourses: '主修课程', description: '在校经历', awards: '获奖 / 荣誉（历史兼容）', publications: '论文 / 专利（历史兼容）'
     }
@@ -104,10 +104,7 @@ export const TEXT_FIELDS = {
   languages: '语言能力（综合描述）', certificates: '资格证书（综合描述）', skills: '专业技能',
   selfEvaluation: '自我评价', interests: '兴趣爱好', additionalInformation: '补充信息'
 };
-export const SENSITIVE_KEYS = new Set([
-  'basic.idCard', 'basic.address', 'basic.emergencyName', 'basic.emergencyPhone',
-  'basic.currentSalary', 'jobIntention.currentAnnual', 'professionalCertificates.number'
-]);
+export const BOOLEAN_KEYS = new Set(['education.isHighest', 'education.isRegular', 'education.doubleDegree']);
 const forbidden = new Set(['__proto__', 'constructor', 'prototype']);
 
 function assertObject(value, name) {
@@ -124,6 +121,37 @@ function cleanText(value, name) {
   if (value.length > 20000) throw new Error(`${name} 超过 20000 字符，请缩短`);
   return value.trim();
 }
+function cleanBoolean(value, name) {
+  if (value == null || value === '') return '';
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    if (/^(是|yes|true|1)$/i.test(value.trim())) return true;
+    if (/^(否|no|false|0)$/i.test(value.trim())) return false;
+    if (name.endsWith('/isRegular') && /^(统招|非统招)$/.test(value.trim())) return value.trim() === '统招';
+    if (name.endsWith('/isHighest') && /^(最高学历|非最高学历)$/.test(value.trim())) return value.trim() === '最高学历';
+    if (name.endsWith('/doubleDegree') && /^(双学位|非双学位)$/.test(value.trim())) return value.trim() === '双学位';
+  }
+  throw new Error(`${name} 请选是、否或留空`);
+}
+function validEducationDate(value) {
+  if (!value || /^(至今|现在|present|current)$/i.test(value)) return true;
+  const m = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec(value);
+  if (!m || +m[2] < 1 || +m[2] > 12) return false;
+  return !m[3] || (+m[3] > 0 && +m[3] <= new Date(Date.UTC(+m[1], +m[2], 0)).getUTCDate());
+}
+function educationDate(value) {
+  const match = /^(\d{4})[-/.年](\d{1,2})(?:[-/.月](\d{1,2}))?月?日?$/.exec(value);
+  return match ? `${match[1]}-${match[2].padStart(2, '0')}${match[3] ? '-' + match[3].padStart(2, '0') : ''}` : value;
+}
+export function syncHighestEducation(profile) {
+  const candidates = profile.education.filter(record => record.isHighest === true);
+  if (candidates.length !== 1) throw new Error('请在教育经历中将且仅将一条设为最高学历');
+  const record = candidates[0];
+  profile.basic.highestDegree = record.degree;
+  const month = /^(\d{4}-\d{2})(?:-\d{2})?$/.exec(record.endDate)?.[1];
+  if (month) profile.basic.expectedGraduationDate = month;
+  return profile;
+}
 export function normalizeProfile(value = {}, { strict = true } = {}) {
   assertObject(value, '个人信息');
   checkKeys(value, [...Object.keys(PROFILE_SCHEMA), ...Object.keys(TEXT_FIELDS)], '个人信息', strict);
@@ -133,7 +161,14 @@ export function normalizeProfile(value = {}, { strict = true } = {}) {
       assertObject(record, schema.title);
       checkKeys(record, Object.keys(schema.fields), schema.title, strict);
       const clean = {};
-      for (const key of Object.keys(schema.fields)) clean[key] = cleanText(record[key], `${schema.title}/${key}`);
+      for (const key of Object.keys(schema.fields)) clean[key] = BOOLEAN_KEYS.has(`${section}.${key}`)
+        ? cleanBoolean(record[key], `${schema.title}/${key}`) : cleanText(record[key], `${schema.title}/${key}`);
+      if (section === 'education') {
+        clean.startDate = educationDate(clean.startDate); clean.endDate = educationDate(clean.endDate);
+      }
+      if (section === 'education' && (!validEducationDate(clean.startDate) || !validEducationDate(clean.endDate))) {
+        throw new Error('教育起止时间请填写有效的 YYYY-MM-DD（兼容旧 YYYY-MM），结束时间也可写至今');
+      }
       if (section === 'basic' && clean.expectedGraduationDate && !/^\d{4}-(0[1-9]|1[0-2])$/.test(clean.expectedGraduationDate)) {
         throw new Error('预计毕业时间请填写 YYYY-MM，如 2027-06');
       }
@@ -142,10 +177,12 @@ export function normalizeProfile(value = {}, { strict = true } = {}) {
     if (schema.multiple) {
       const entries = value[section] ?? [];
       if (!Array.isArray(entries) || entries.length > MAX_ENTRIES) throw new Error(`${schema.title} 最多 ${MAX_ENTRIES} 条`);
-      result[section] = entries.map(cleanRecord).filter(record => Object.values(record).some(Boolean));
+      result[section] = entries.map(cleanRecord).filter(record => Object.values(record).some(value => value !== '' && value != null));
     } else result[section] = cleanRecord(value[section] ?? {});
   }
   for (const key of Object.keys(TEXT_FIELDS)) result[key] = cleanText(value[key], TEXT_FIELDS[key]);
+  const highest = result.education.filter(record => record.isHighest === true);
+  if (highest.length === 1 && !result.basic.highestDegree) result.basic.highestDegree = highest[0].degree;
   if (JSON.stringify(result).length > 200000) throw new Error('个人信息总量过大，请减少条目');
   return result;
 }
@@ -153,12 +190,11 @@ export function normalizeProfile(value = {}, { strict = true } = {}) {
 export function profileSources(profile) {
   const sources = [];
   const add = (key, label, value) => {
-    if (value) {
+    if (value !== '' && value != null) {
       const parts = key.split('.');
-      sources.push({ id: `S${sources.length}`, key, label, value,
+      sources.push({ id: `S${sources.length}`, key, label, value: typeof value === 'boolean' ? (value ? '是' : '否') : value,
         section: PROFILE_SCHEMA[parts[0]] ? parts[0] : 'other', fieldKey: parts.at(-1),
-        recordIndex: /^\d+$/.test(parts[1]) ? Number(parts[1]) : null,
-        sensitive: SENSITIVE_KEYS.has(key) || SENSITIVE_KEYS.has(`${parts[0]}.${parts.at(-1)}`) });
+        recordIndex: /^\d+$/.test(parts[1]) ? Number(parts[1]) : null });
     }
   };
   for (const [section, schema] of Object.entries(PROFILE_SCHEMA)) {
@@ -219,7 +255,7 @@ export function sourceConflict(field, source, { manualUnknown = false } = {}) {
   const kind = semantics.fieldKind(field.label || field.name || field.placeholder, section);
   if (kind === 'degree' && section === 'basic' && source.fieldKey === 'highestDegree') return null;
   if (kind === 'expectedGraduationDate' && source.section === 'education' && source.fieldKey === 'endDate') {
-    return /^\d{4}[-/.]\d{1,2}$/.test(source.value) ? null : 'graduation_month_required';
+    return /^\d{4}[-/.]\d{1,2}(?:[-/.]\d{1,2})?$/.test(source.value) ? null : 'graduation_month_required';
   }
   return !kind || source.fieldKey === kind ? null : 'field_mismatch';
 }
@@ -274,7 +310,7 @@ export class MappingValidationError extends Error {
   }
 }
 
-const TYPES = new Set(['native-input', 'native-select', 'native-radio', 'contenteditable', 'wrapper-input', 'custom-dropdown', 'custom-datepicker', 'custom-interactive']);
+const TYPES = new Set(['native-input', 'native-select', 'native-radio', 'contenteditable', 'wrapper-input', 'school-autocomplete', 'custom-dropdown', 'custom-datepicker', 'custom-interactive']);
 export function normalizeFields(fields) {
   if (!Array.isArray(fields) || fields.length > MAX_FIELDS) throw new Error(`一次最多检测 ${MAX_FIELDS} 个字段`);
   const seen = new Set();

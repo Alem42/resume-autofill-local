@@ -42,7 +42,7 @@ export function domFixture() {
           if (match[2] === '=' && actual !== match[3]) return false;
           if (match[2] === '*=' && !actual.includes(match[3])) return false;
         }
-        return Boolean(tag || value.startsWith('[') || value.startsWith('.'));
+        return Boolean(value === '*' || tag || value.startsWith('[') || value.startsWith('.'));
       });
     }
     closest(selector) { for (let node = this; node; node = node.parentElement) if (node.matches(selector)) return node; return null; }
@@ -79,7 +79,7 @@ export function domFixture() {
   const context = vm.createContext({ document: doc, location: { href: 'https://jobs.example/resume' },
     window: { getComputedStyle: el => ({ display: el.hidden ? 'none' : 'block', visibility: 'visible', opacity: '1' }) },
     CSS: { escape: value => value }, Event: class { constructor(type) { this.type = type; } },
-    KeyboardEvent: class { constructor(type) { this.type = type; } }, HTMLInputElement: Input, HTMLTextAreaElement: Textarea,
+    KeyboardEvent: class { constructor(type) { this.type = type; } }, MouseEvent: class { constructor(type) { this.type = type; } }, HTMLInputElement: Input, HTMLTextAreaElement: Textarea,
     MutationObserver: class { observe() {} disconnect() {} },
     setTimeout(fn, ms) { const id = ++nextTimer; if (ms < 500) queueMicrotask(fn); else timers.set(id, fn); return id; },
     clearTimeout(id) { timers.delete(id); },

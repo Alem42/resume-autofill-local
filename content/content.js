@@ -26,7 +26,7 @@
       if (root.querySelector('input:not([type="radio"]):not([type="hidden"]),select,textarea')) break;
       const captions = [root.getAttribute('aria-label') || '', ...[...root.querySelectorAll('legend,label,span,div,p')]
         .filter(node => !node.querySelector('input,select,textarea')).map(readLabelText)];
-      const label = captions.map(text => text.replace(/[\s*＊：:]/g, '')).find(text => /^(性别|gender|学习形式|是否全日制|是否统招)$/i.test(text));
+      const label = captions.map(text => text.replace(/[\s*＊：:]/g, '')).find(text => /^(性别|gender|学习形式|是否全日制|是否统招|是否为?最高学历|是否双学位)$/i.test(text));
       if (!label) continue;
       const optionLabel = option => {
         const label = option.closest('label') || (option.id && document.querySelector(`label[for="${CSS.escape(option.id)}"]`));
@@ -55,8 +55,8 @@
     const inner = el.querySelector('input:not([type="hidden"]), textarea');
     if (inner && inner.value.trim()) return true;
     if (el.isContentEditable && el.textContent.trim()) return true;
-    const display = el.querySelector('[class*="display-value"], [class*="selection-item"], [class*="select-value"]');
-    return Boolean((el.getAttribute('aria-valuetext') || display?.textContent || '').trim());
+    const display = el.querySelector('[class*="display-value"], [class*="selection-item"], [class*="select-value"], [class*="selected-value"]');
+    return Boolean((el.getAttribute('aria-valuetext') || display?.textContent || getDropdownDisplayValue(el) || '').trim());
   }
   function fingerprint(el) {
     return [el.tagName, el.type || '', el.name || '', el.getAttribute('role') || '', getLabelText(el)].join('|');
@@ -76,6 +76,8 @@
     if (tag === 'textarea') return 'native-input';
     if (tag === 'input') {
       if (['date', 'month', 'week', 'time', 'datetime-local'].includes(el.type)) return 'native-input';
+      if (globalThis.__resumeSemantics.fieldKind(getLabelText(el), 'education') === 'school'
+        && (hasDropdownBehavior(el) || el.getAttribute('aria-autocomplete') || el.closest('[class*="autocomplete"], [class*="auto-complete"], [class*="AutoComplete"]'))) return 'school-autocomplete';
       // 只读输入框多为自定义下拉/级联/日期组件的展示层：原生 setter 填值不会触发框架更新，
       // 必须走组件交互。先判日期（如 B 站 bili-date），再判下拉。
       if (el.readOnly) {
@@ -321,6 +323,7 @@
 
   // 搜索框类字段（最大的误判源：搜索页）
   function isSearchLikeField(el) {
+    if (globalThis.__resumeSemantics.fieldKind(getLabelText(el), 'education') === 'school') return false;
     if (el.type === 'search') return true;
     if (el.getAttribute('role') === 'searchbox') return true;
     const text = ((el.name || '') + ' ' + getLabelText(el) + ' ' + getPlaceholder(el)).toLowerCase();
@@ -377,11 +380,32 @@
   // ===== 通用标签检测 =====
   function readLabelText(label) {
     const clone = label.cloneNode(true);
-    clone.querySelectorAll('input, select, textarea, [contenteditable], [role="textbox"], [role="combobox"], [class*="display-value"], [class*="selection-item"], [class*="select-value"], script, style')
+    clone.querySelectorAll('input, select, textarea, [contenteditable], [role="textbox"], [role="combobox"], [class*="display-value"], [class*="selection-item"], [class*="select-value"], [class*="selected-value"], [class*="tooltip"], [class*="Tooltip"], [class*="error"], [aria-hidden="true"], svg, script, style')
       .forEach(node => node.remove());
     return clone.textContent.trim();
   }
+  function dateRangeInfo(el) {
+    if (el.tagName !== 'INPUT' || !(['date', 'month'].includes(el.type) || hasDatepickerBehavior(el))) return null;
+    for (let root = el.parentElement, depth = 0; root && root !== document.body && depth < 6; root = root.parentElement, depth++) {
+      const inputs = [...root.querySelectorAll('input')].filter(input => input.type !== 'hidden');
+      if (inputs.length > 2) break;
+      if (inputs.length === 2 && inputs.every(input => ['date', 'month'].includes(input.type) || hasDatepickerBehavior(input))) {
+        const caption = getBaseLabelText(el);
+        if (/起止|开始.*结束|时间范围|daterange|range|calendar-picker|picker-range/i.test(caption + ' ' + root.className)) return { root, inputs, index: inputs.indexOf(el) };
+      }
+    }
+    return null;
+  }
   function getLabelText(el) {
+    if (el.type === 'radio') return radioInfo(el)?.label || '';
+    const base = getBaseLabelText(el);
+    const range = dateRangeInfo(el);
+    if (range) return range.index === 0 ? '开始时间' : '结束时间';
+    if (base) return base;
+    const placeholder = getPlaceholder(el);
+    return globalThis.__resumeSemantics.fieldKind(placeholder) ? placeholder.replace(/^(?:请输入|请选择|请填写)/, '') : '';
+  }
+  function getBaseLabelText(el) {
     if (el.type === 'radio') return radioInfo(el)?.label || '';
     const normalize = text => text.replace(/^[\s*＊]+|[：:*＊\s?]+$/g, '').trim();
     const aria = el.getAttribute('aria-label');
@@ -394,23 +418,26 @@
     // label for
     if (el.id) {
       const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      if (label) return readLabelText(label);
+      if (label) return normalize(readLabelText(label));
     }
     // 包裹的 label
     const parentLabel = el.closest('label');
     if (parentLabel) {
       const text = readLabelText(parentLabel);
-      if (text) return text;
+      if (text) return normalize(text);
     }
     // 通用：form-item / form-group 中的 label。
     // ant 的 ant-form-item-children 也会命中 [class*="form-item"] 但里面没有 label，
     // label 在更上层的 ant-form-item，所以向上逐级找真正带 label 的那一级
     let formItem = el.closest('[class*="form-item"], [class*="form-group"], [class*="field-item"], [class*="form-row"]');
     while (formItem && formItem !== document.body) {
-      const label = formItem.querySelector('[class*="label"], label');
+      const label = formItem.querySelector('[class*="label"], [class*="Label"], label');
       if (label) {
         const text = readLabelText(label).replace(/[：:*：*\s?]+$/, '');
-        if (text) return text;
+        const others = [...formItem.querySelectorAll('input,select,textarea,[contenteditable]')]
+          .filter(node => node.type !== 'hidden' && node !== el && !node.contains(el) && !el.contains(node));
+        if (text && (!others.length || (/起止|时间范围/.test(text) && others.length === 1
+          && (['date', 'month'].includes(el.type) || hasDatepickerBehavior(el))))) return normalize(text);
       }
       formItem = formItem.parentElement && formItem.parentElement.closest('[class*="form-item"], [class*="form-group"], [class*="field-item"], [class*="form-row"]');
     }
@@ -418,17 +445,32 @@
     if (el.getAttribute('data-label')) return el.getAttribute('data-label');
     // CSS modules and grid layouts often have a div/span caption instead of a label element.
     // Stay within the nearest single-control row; never use a whole resume card as its caption.
-    for (let row = el.parentElement, depth = 0; row && row !== document.body && depth < 5; row = row.parentElement, depth++) {
+    for (let row = el.parentElement, depth = 0; row && row !== document.body && depth < 8; row = row.parentElement, depth++) {
       const controls = [...row.querySelectorAll('input,select,textarea,[role="combobox"],[contenteditable]')]
         .filter(node => !['hidden', 'radio', 'checkbox'].includes(node.type));
-      if (controls.some(node => node !== el && !node.contains(el) && !el.contains(node))) break;
+      const multiple = controls.some(node => node !== el && !node.contains(el) && !el.contains(node));
+      // Some grids put captions and controls in adjacent cells rather than one field wrapper.
+      const branch = [...row.children].find(node => node === el || node.contains(el));
+      const branchIndex = [...row.children].indexOf(branch);
+      for (let i = branchIndex - 1; i >= 0; i--) {
+        const peer = row.children[i];
+        if (['INPUT', 'SELECT', 'TEXTAREA'].includes(peer.tagName) || peer.isContentEditable
+          || peer.querySelector('input,select,textarea,[contenteditable]')) break;
+        const text = normalize(readLabelText(peer));
+        if (text.length <= 50 && globalThis.__resumeSemantics.fieldKind(text, 'education')) return text;
+      }
       const candidates = [...row.querySelectorAll('label,[class*="label"],[class*="Label"],[class*="caption"],[class*="Caption"],span,div,p')];
-      const label = candidates.find(node => node !== el && !node.contains(el) && !el.contains(node)
+      const valid = candidates.filter(node => node !== el && !node.contains(el) && !el.contains(node)
         && !node.querySelector('input,select,textarea,button,a[href],[contenteditable]')
         && !node.closest('[class*="placeholder"],[class*="option"],[role="option"],[class*="selection"],[class*="display-value"],[class*="select-value"]')
         && normalize(readLabelText(node)).length > 0 && normalize(readLabelText(node)).length <= 50
         && !(typeof node.className === 'string' && /help|error|tooltip|placeholder|hint|message/i.test(node.className)));
+      const label = multiple ? valid.find(node => (['date', 'month'].includes(el.type) || hasDatepickerBehavior(el))
+          && controls.filter(node => node.tagName === 'INPUT').length === 2
+          && /^(?:起止时间|起止日期|时间范围)$/.test(normalize(readLabelText(node))))
+        : valid.find(node => globalThis.__resumeSemantics.fieldKind(normalize(readLabelText(node)), 'education')) || valid[0];
       if (label) return normalize(readLabelText(label));
+      if (multiple) break;
     }
     return '';
   }
@@ -461,14 +503,15 @@
 
   // 日期值 → 可比较数字（2026-06 → 202606），用于按值倒序排日期字段
   function dateSortKey(v) {
-    const m = /^(\d{4})[-\/.](\d{1,2})?/.exec(String(v || '').trim());
+    const m = /^(\d{4})[-\/.](\d{1,2})(?:[-\/.](\d{1,2}))?/.exec(String(v || '').trim());
     if (!m) return 0;
-    return parseInt(m[1] + (m[2] ? String(+m[2]).padStart(2, '0') : '00'), 10);
+    return parseInt(m[1] + String(+m[2]).padStart(2, '0') + String(+(m[3] || 1)).padStart(2, '0'), 10);
   }
 
   // ===== 填充执行 =====
   async function executeFill(mappings, onProgress, auditFieldIds = []) {
     let count = 0;
+    const outcomes = [];
     const total = mappings.length;
     const batchToken = activeScanToken;
 
@@ -483,10 +526,12 @@
       else rest.push(m);
     }
     const ordered = rest.concat(dates.sort((a, b) => dateSortKey(b.value) - dateSortKey(a.value)));
+    const handled = new Set();
 
     for (let i = 0; i < ordered.length; i++) {
       if (!activeScanToken || activeScanToken !== batchToken) throw new Error('填写已停止');
       const mapping = ordered[i];
+      if (handled.has(mapping.fieldId)) continue;
       // 防御：LLM 返回空值时跳过，避免填充空字段
       if (mapping.value === null || mapping.value === undefined || mapping.value === '') {
         if (onProgress) onProgress(i + 1, total);
@@ -494,25 +539,46 @@
       }
       const el = findElement(mapping.fieldId);
       if (!el || (!allowOverwrite && fieldHasValue(el))) {
-
+        outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: el ? 'existing_value' : 'field_changed' });
         if (onProgress) onProgress(i + 1, total);
         continue;
       }
 
       const value = String(mapping.value);
       const componentType = mapping.componentType || detectComponentType(el);
+      const range = componentType === 'custom-datepicker' && dateRangeInfo(el);
+      if (range) {
+        const pair = range.inputs.map(input => mappings.find(item => findElement(item.fieldId) === input));
+        // A shared picker can modify both dates. Operate it only when both fields were approved.
+        if (pair.every(Boolean) && pair.every(item => item.componentType === 'custom-datepicker')
+          && range.inputs.every(input => eligibleElement(input) && (allowOverwrite || !fieldHasValue(input)))) {
+          pair.forEach(item => handled.add(item.fieldId));
+          let success = false;
+          try { success = await fillDateRangePair(range.inputs, pair.map(item => String(item.value))); } catch {}
+          for (const item of pair) outcomes.push({ fieldId: item.fieldId, status: success ? 'filled' : 'skipped',
+            ...(success ? {} : { reason: 'selection_not_committed' }) });
+          if (success) { count += 2; range.inputs.forEach(highlightField); }
+        } else {
+          handled.add(mapping.fieldId);
+          outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: 'range_requires_both' });
+        }
+        continue;
+      }
 
       try {
         const filled = await fillByType(el, value, componentType, mapping.fieldId);
         if (filled) { highlightField(el); count++; }
+        outcomes.push({ fieldId: mapping.fieldId, status: filled ? 'filled' : 'skipped',
+          ...(filled ? {} : { reason: 'selection_not_committed' }) });
       } catch {
         // A component that refuses a synthetic event is counted as skipped.
+        outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: 'component_refused' });
       }
       if (onProgress) onProgress(i + 1, total);
       await sleep(150);
     }
 
-    const result = { filled: count, skipped: total - count };
+    const result = { filled: count, skipped: total - count, outcomes };
     if (auditFieldIds.length) result.readback = readValues(auditFieldIds);
     return result;
   }
@@ -526,6 +592,7 @@
       case 'native-select': return fillNativeSelect(el, value);
       case 'native-radio': return fillNativeRadio(el, value);
       case 'contenteditable': return fillContentEditable(el, value);
+      case 'school-autocomplete': return fillSchoolAutocomplete(el, value);
       case 'custom-dropdown': case 'custom-interactive': return fillGenericDropdown(el, value);
       case 'custom-datepicker': return fillGenericDatepicker(el, value, fieldId);
       default: return false;
@@ -542,9 +609,9 @@
       const text = normalize(value);
       if (/^(男|男性|男生|male|man|m)$/.test(text)) return 'male';
       if (/^(女|女性|女生|female|woman|f)$/.test(text)) return 'female';
-      if (/^是否(全日制|统招)$/.test(info.label)) {
-        if (/^(是|yes|true|全日制|统招)$/.test(text)) return 'yes';
-        if (/^(否|no|false|非全日制|非统招)$/.test(text)) return 'no';
+      if (/^是否/.test(info.label)) {
+        if (/^(是|yes|true|1|全日制|统招)$/.test(text)) return 'yes';
+        if (/^(否|no|false|0|非全日制|非统招)$/.test(text)) return 'no';
       }
       return text;
     };
@@ -623,9 +690,10 @@
   // 读取自定义下拉字段当前已选中的显示值（如 Moka .sd-Input-display-value-* span）
   function getDropdownDisplayValue(el) {
     if (el && el.closest) {
-      const container = el.closest('label[class*="Select-container"], [class*="sd-Select-container"], label');
+      const start = el.tagName === 'INPUT' ? el.parentElement || el : el;
+      const container = start.closest('[role="combobox"], .ant-select, [class*="Select-container"], [class*="select-container"], .el-select, label');
       if (container) {
-        const dv = container.querySelector('[class*="display-value"], [class*="selection-item"], [class*="selected"], [class*="value"]');
+        const dv = container.querySelector('[class*="display-value"], [class*="selection-item"], [class*="selected-value"], [class*="select-value"]');
         if (dv) {
           const t = dv.textContent.trim();
           if (t) return t;
@@ -650,12 +718,68 @@
       if (afterValue !== beforeValue) return true;
       const afterDisplay = getDropdownDisplayValue(input);
       if (afterDisplay && afterDisplay !== beforeDisplay) return true;
+      if (afterDisplay && matchDropdownOption(afterDisplay, targetText) === String(targetText).length
+        && (el.getAttribute('aria-selected') === 'true' || !el.isConnected || !isVisible(el.closest(DROPDOWN_PANELS)))) return true;
     }
     return false;
   }
 
   // Candidates are restricted to visible nearby dropdown panels.
   const DROPDOWN_PANELS = '[role="listbox"], [role="tree"], .ant-select-dropdown, .ant-cascader-menus, .el-select-dropdown, [class*="Select-menu"], [class*="select-menu"], [class*="dropdown-menu"], [class*="cascader-menu"]';
+  const SCHOOL_PANELS = DROPDOWN_PANELS + ', [class*="autocomplete-suggestion"], [class*="auto-complete-dropdown"], [class*="AutoComplete-menu"]';
+  const sameSchool = (a, b) => String(a || '').normalize('NFKC').replace(/\s+/g, '').toLowerCase()
+    === String(b || '').normalize('NFKC').replace(/\s+/g, '').toLowerCase();
+  async function fillSchoolAutocomplete(el, value) {
+    const token = activeScanToken;
+    const input = el.tagName === 'INPUT' ? el : el.querySelector('input:not([type="hidden"])');
+    if (!input || input.disabled) return false;
+    const beforePanels = new Set([...document.querySelectorAll(SCHOOL_PANELS)].filter(isVisible));
+    input.focus();
+    input.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    input.click();
+    if (!input.readOnly) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      if (setter) setter.call(input, value); else input.value = value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    // Searching is asynchronous. A textbox containing the school name is not a committed selection.
+    for (let attempt = 0; attempt < 25; attempt++) {
+      await sleep(120);
+      if (!activeScanToken || activeScanToken !== token) throw new Error('填写已停止');
+      const linkedIds = [input, el].flatMap(node => [node.getAttribute('aria-controls'), node.getAttribute('aria-owns')])
+        .filter(Boolean).flatMap(value => value.split(/\s+/));
+      const r = input.getBoundingClientRect();
+      const panels = [...document.querySelectorAll(SCHOOL_PANELS)].filter(panel => {
+        if (!isVisible(panel) || panel.contains(input)) return false;
+        if (linkedIds.length) return linkedIds.includes(panel.id) || linkedIds.some(id => panel.querySelector(`[id="${CSS.escape(id)}"]`));
+        if (beforePanels.has(panel)) return false;
+        const pr = panel.getBoundingClientRect();
+        return Math.abs(pr.left - r.left) < 400 && Math.abs(pr.top - r.bottom) < 600;
+      });
+      const candidates = [...new Set(panels.flatMap(panel => [...panel.querySelectorAll('[role="option"],li,[class*="option"],[class*="suggestion"],span,div')]))]
+        .filter(option => safeOption(option) && isVisible(option) && option.getAttribute('aria-disabled') !== 'true'
+          && !/disabled/i.test(option.className) && sameSchool(option.textContent, value));
+      // Nested option/label nodes represent one candidate; prefer the outer click handler.
+      const choices = candidates.filter(option => !candidates.some(other => other !== option && other.contains(option)));
+      if (choices.length !== 1) continue;
+      const choice = choices[0], panel = panels.find(panel => panel.contains(choice));
+      choice.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      choice.click();
+      await sleep(200);
+      const display = getDropdownDisplayValue(el) || input.value;
+      const selected = choice.getAttribute('aria-selected') === 'true';
+      // The click must commit the selected value: panel dismissal or selected-state change is evidence.
+      if (sameSchool(display, value) && (selected || !choice.isConnected || !isVisible(panel)
+        || input.getAttribute('aria-expanded') === 'false' || el.getAttribute('aria-expanded') === 'false')) {
+        await closeOpenPanel(el, input);
+        return true;
+      }
+      break;
+    }
+    await closeOpenPanel(el, input);
+    return false;
+  }
   function safeOption(el) {
     return !el.closest('a[href], button[type="submit"], input, form [role="button"]') && el !== document.body;
   }
@@ -677,6 +801,7 @@
 
   // 通用下拉框填充（Ant Design / Element / Arco / 任意自定义下拉；支持省/市级联逐级选择）
   async function fillGenericDropdown(el, value) {
+    if (globalThis.__resumeSemantics.fieldKind(getLabelText(el), 'education') === 'school') return fillSchoolAutocomplete(el, value);
     const v = String(value || '').trim();
 
     // 1. 记录打开前已可见的选项（属于其他已打开的面板），避免误点；
@@ -839,6 +964,12 @@
 
   async function fillGenericDatepicker(el, value, selector) {
     const input = el.tagName === 'INPUT' ? el : (el.querySelector('input') || el);
+    const direct = await selectExactCalendarDay(input, value);
+    if (direct) {
+      await closeOpenPanel(el, el, false);
+      return matchesDate(input.value, value);
+    }
+    await closeOpenPanel(el, el, false);
     // 优先：ant-design-vue 日历点选。readonly + controlled 的 DatePicker 直接 setter 赋值 + Enter
     // 不生效（实测：面板打开时赋值会被忽略，值回退为空），必须点日历格子真正选中
     const ok = await selectDateInCalendar(input, value, selector);
@@ -849,13 +980,14 @@
       return matchesDate(input.value, value);
     }
     // 次要：泛用年月网格日期选择器（如 Moka 自研组件，面板含 "N年" + 月份网格）
-    const genericOk = await selectDateInGenericPicker(input, value, selector);
+    const genericOk = /\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(value) ? false : await selectDateInGenericPicker(input, value, selector);
     if (genericOk) {
       await closeOpenPanel(el, el, false);
       return matchesDate(input.value, value);
     }
     // 兜底：先可靠关掉面板，再赋值 + Enter（ant readonly 上多不生效，但非 ant 控件可用）
     await closeOpenPanel(el, el, false);
+    if (input.readOnly) return false;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
     if (setter) setter.call(input, value); else input.value = value;
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -866,6 +998,70 @@
     input.blur();
     await closeOpenPanel(el, el, true);
     return matchesDate(input.value, value);
+  }
+
+  async function fillDateRangePair(inputs, values) {
+    const fullDates = values.every(value => /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(value));
+    await closeOpenPanel(inputs[0], inputs[0], false);
+    let selected = false;
+    for (let index = 0; index < 2; index++) {
+      const input = inputs[index], value = values[index];
+      input.focus();
+      const exact = fullDates && await selectExactCalendarDay(input, value, { verify: false, open: index === 0 });
+      if (exact) { selected = true; continue; }
+      const match = /^(\d{4})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?$/.exec(value);
+      if (!match) break;
+      // Legacy Ant calendars also keep a pending pair until the second day is selected.
+      const legacy = await trySelectDate(input, +match[1], +match[2], +(match[3] || 1), index === 1 || Boolean(findOpenCalendarNear(input)));
+      if (legacy === true) { selected = true; continue; }
+      selected = false; break;
+    }
+    await closeOpenPanel(inputs[1], inputs[1], true);
+    if (selected && inputs.every((input, index) => matchesDate(input.value, values[index]))) return true;
+    // Editable range inputs may support text entry. Readonly pickers must commit through their calendar.
+    if (inputs.some(input => input.readOnly)) return false;
+    for (const index of [1, 0]) fillNativeInput(inputs[index], values[index]);
+    await sleep(180);
+    return inputs.every((input, index) => matchesDate(input.value, values[index]));
+  }
+
+  // Current Ant/Element date panels expose ISO dates on cells. Use the full date, never day text alone.
+  async function selectExactCalendarDay(input, value, { verify = true, open = true } = {}) {
+    const match = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(value);
+    if (!match) return false;
+    const target = `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+    const token = activeScanToken;
+    const excluded = open ? new Set([...document.querySelectorAll(PANEL_SELECTORS)].filter(isVisible)) : new Set();
+    if (open) input.click();
+    input.focus(); await sleep(250);
+    for (let guard = 0; guard < 120; guard++) {
+      if (!activeScanToken || token !== activeScanToken) throw new Error('填写已停止');
+      const panel = findOpenGenericPanelNear(input, excluded);
+      if (!panel) return false;
+      const range = dateRangeInfo(input);
+      const side = range && panel.querySelector(range.index === 0 ? '.ant-calendar-range-left' : '.ant-calendar-range-right');
+      const scope = side || panel;
+      const cells = [...scope.querySelectorAll(`[title="${target}"],[data-date="${target}"],[aria-label="${target}"]`)]
+        .filter(cell => isVisible(cell) && cell.getAttribute('aria-disabled') !== 'true'
+          && !cell.disabled && !/disabled|last-month|next-month|prev-month|nextMonth|prevMonth|outside/i.test(cell.className));
+      const cell = cells.find(cell => cell.tagName === 'TD') || cells[0];
+      if (cell && !cell.closest('a[href],button[type="submit"]')) {
+        cell.click(); await sleep(180);
+        if (!verify || matchesDate(input.value, target)) return true;
+        return false;
+      }
+      // Read the displayed year/month from date-cell metadata; header text can vary by locale.
+      const dates = [...scope.querySelectorAll('[title],[data-date]')].map(cell => cell.getAttribute('data-date') || cell.getAttribute('title'))
+        .filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date || '')).sort();
+      if (!dates.length) return false;
+      const current = dates[Math.floor(dates.length / 2)], deltaYears = +match[1] - +current.slice(0, 4);
+      const previous = target < current;
+      let button = Math.abs(deltaYears) > 1 ? scope.querySelector(previous ? '.ant-picker-header-super-prev-btn' : '.ant-picker-header-super-next-btn') : null;
+      button ||= scope.querySelector(previous ? '.ant-picker-header-prev-btn,.ant-calendar-prev-month-btn' : '.ant-picker-header-next-btn,.ant-calendar-next-month-btn');
+      if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true') return false;
+      button.click(); await sleep(120);
+    }
+    return false;
   }
 
   // ===== ant-design-vue DatePicker 日历点选 =====
@@ -909,8 +1105,8 @@
   }
 
   // 单次日历点选；返回 true / false（无面板）/ 'nav-failed'（面板在但导航中断）
-  async function trySelectDate(input, year, month, day) {
-    input.click();
+  async function trySelectDate(input, year, month, day, keepOpen = false) {
+    if (!keepOpen || !findOpenCalendarNear(input)) input.click();
     input.focus();
     await sleep(400);
     let panel = findOpenCalendarNear(input);
@@ -993,7 +1189,7 @@
     let best = null;
     let distance = Infinity;
     for (const node of document.querySelectorAll('.ant-calendar-picker-panel, .ant-calendar')) {
-      const s = getComputedStyle(node);
+      const s = window.getComputedStyle(node);
       if (s.display === 'none' || s.visibility === 'hidden') continue;
       const pr = node.getBoundingClientRect();
       if (pr.width <= 0 || pr.height <= 0) continue;
@@ -1003,7 +1199,8 @@
         if (current < distance) { best = node; distance = current; }
       }
     }
-    return best;
+    const range = dateRangeInfo(el);
+    return (range && best?.querySelector(range.index === 0 ? '.ant-calendar-range-left' : '.ant-calendar-range-right')) || best;
   }
 
   function findYearCell(panel, year) {
@@ -1017,10 +1214,11 @@
   // 验证输入值年份正确。最多重试 3 次。
 
   // 在输入框附近找任意可见面板（使用 PANEL_SELECTORS 泛用模式，不限于 ant calendar）
-  function findOpenGenericPanelNear(el) {
+  function findOpenGenericPanelNear(el, excluded = new Set()) {
     const r = el.getBoundingClientRect();
     let best = null;
     for (const node of document.querySelectorAll(PANEL_SELECTORS)) {
+      if (excluded.has(node)) continue;
       if (!isVisible(node)) continue;
       if (node.contains(el)) continue;
       const pr = node.getBoundingClientRect();
@@ -1104,7 +1302,7 @@
   // ===== 面板收起（下拉/级联/日期共用） =====
   // 部分框架（尤其 B 站 ant-design-vue / bili-date）忽略 isTrusted=false 的合成事件，
   // 只发 document 级 mousedown/click 关不掉面板。因此：多层机制 + 确认重试。
-  const PANEL_SELECTORS = DROPDOWN_PANELS + ', .ant-calendar-picker-panel, .ant-calendar, [class*="calendar-panel"], [class*="datepicker-panel"], [class*="picker-panel"], [class*="date-picker"]';
+  const PANEL_SELECTORS = DROPDOWN_PANELS + ', .ant-calendar-picker-panel, .ant-calendar, .ant-picker-dropdown, .el-picker-panel, [class*="calendar-panel"], [class*="datepicker-panel"], [class*="picker-panel"], [class*="date-picker"]';
 
   // 字段附近是否仍有打开的面板（宽松判断，仅用于确认收起；误报无害）
   function isPanelOpenNear(el) {
@@ -1192,13 +1390,16 @@
     });
   }
   function sleep(ms) {
+    const token = activeScanToken;
     return new Promise(resolve => setTimeout(resolve, ms)).then(() => {
-      if (!activeScanToken) throw new Error('填写已停止');
+      if (!activeScanToken || token !== activeScanToken) throw new Error('填写已停止');
     });
   }
   function isVisible(el) {
     const s = window.getComputedStyle(el);
-    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    // Framework radio inputs are transparent overlays on their visible option label.
+    if (s.opacity === '0' && !(el.type === 'radio' && el.closest('label') && isVisible(el.closest('label')))) return false;
     for (let parent = el.parentElement; parent; parent = parent.parentElement) {
       const parentStyle = window.getComputedStyle(parent);
       if (parentStyle.display === 'none' || parentStyle.visibility === 'hidden' || parentStyle.opacity === '0') return false;

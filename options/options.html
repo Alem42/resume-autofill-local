@@ -16,6 +16,8 @@
     <label class="check-row"><input id="remember-key" type="checkbox"><span>在本机记住 API Key<small class="value">默认只在本次浏览器会话中保存。勾选后会写入浏览器本地存储，未进行额外加密。</small></span></label>
     <div class="actions"><button id="test-connection" type="button">保存后测试连接</button><button id="clear-key" class="danger" type="button">移除已保存的密钥</button></div>
   </section>
+  <p class="muted">教育起止时间支持 YYYY-MM-DD，保留旧的 YYYY-MM。最高学历、统招和双学位可以选择是 / 否；不会把未填写当成否。资料确认时默认全选，可自行取消。</p>
+  <button id="sync-highest" type="button">将标记为最高学历的教育经历同步到基本信息</button>
   <form id="profile-form" autocomplete="off"><div id="profile-sections"></div></form>
   <section class="card">
     <h2>本机备份</h2>
@@ -25,7 +27,7 @@
   </section>
   <section class="card">
     <h2>填写问题诊断</h2>
-    <p class="muted">导出最近一次字段匹配的分类、编号和拦截原因。不包含个人资料值、网页字段原文、网址、API Key 或模型原始回复，只在浏览器会话中保留。</p>
+    <p class="muted">导出最近一次字段匹配的分类、编号、对应关系、执行状态和拦截原因。不包含个人资料值、网页字段原文、网址、API Key 或模型原始回复，只在浏览器会话中保留。</p>
     <button id="export-diagnostic" type="button">导出最近一次诊断 JSON</button>
   </section>
   <div class="sticky"><div class="actions"><button id="save-options" class="primary" type="button">保存个人信息与设置</button><span id="status" class="status" role="status" aria-live="polite"></span></div></div>

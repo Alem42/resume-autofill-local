@@ -1,19 +1,22 @@
-import { PROFILE_SCHEMA, TEXT_FIELDS, SENSITIVE_KEYS, MAX_ENTRIES, normalizeProfile } from '../shared/profile.js';
+import { PROFILE_SCHEMA, TEXT_FIELDS, BOOLEAN_KEYS, MAX_ENTRIES, normalizeProfile, syncHighestEducation } from '../shared/profile.js';
 import { send, element, status, onClick, downloadJSON } from '../shared/ui.js';
 
 const containers = new Map();
 const longFields = new Set(['description', 'awards', 'publications', 'responsibilities', 'achievements', 'coreCourses', 'authors', 'leavingReason']);
 function field(section, key, label, value = '') {
   const wrapper = element('label', 'field' + (longFields.has(key) ? ' wide' : ''));
-  const sensitive = SENSITIVE_KEYS.has(`${section}.${key}`);
-  wrapper.append(element('span', sensitive ? 'sensitive' : '', label + (sensitive ? '（敏感，可留空）' : '')));
-  const input = element(longFields.has(key) ? 'textarea' : 'input');
+  wrapper.append(element('span', '', label));
+  const boolean = BOOLEAN_KEYS.has(`${section}.${key}`);
+  const input = element(boolean ? 'select' : longFields.has(key) ? 'textarea' : 'input');
+  if (boolean) for (const [val, caption] of [['', '未填写'], ['true', '是'], ['false', '否']]) {
+    const option = element('option', '', caption); option.value = val; input.append(option);
+  }
   if (input.tagName === 'INPUT') input.type = key === 'expectedGraduationDate' ? 'month' : 'text';
   input.dataset.key = key;
-  input.value = value;
+  input.value = boolean && typeof value === 'boolean' ? String(value) : value;
   input.maxLength = 20000;
   input.autocomplete = 'off';
-  if (/Date$|birthday/.test(key)) input.placeholder = '如：2024-06；结束时间可写“至今”';
+  if (/Date$|birthday/.test(key)) input.placeholder = section === 'education' ? 'YYYY-MM-DD，如 2024-09-15；结束可写至今' : '如：2024-06-15；结束时间可写“至今”';
   wrapper.append(input);
   return wrapper;
 }
@@ -46,7 +49,7 @@ function record(section, schema, data = {}) {
     node.append(header);
   }
   const grid = element('div', 'grid');
-  for (const [key, label] of Object.entries(schema.fields)) grid.append(field(section, key, label, data[key] || ''));
+  for (const [key, label] of Object.entries(schema.fields)) grid.append(field(section, key, label, data[key] ?? ''));
   node.append(grid);
   return node;
 }
@@ -132,6 +135,11 @@ async function initialize() {
 document.getElementById('profile-form').addEventListener('submit', event => event.preventDefault());
 document.addEventListener('input', event => { if (event.isTrusted) status('有未保存的修改'); });
 onClick('save-options', save);
+onClick('sync-highest', () => {
+  const profile = syncHighestEducation(collect());
+  render(profile);
+  status('已同步最高学历和毕业年月到基本信息，请保存。');
+});
 onClick('test-connection', async () => { await save(); status('正在测试连接…'); await send({ type: 'TEST_CONNECTION' }); status('DeepSeek 连接成功'); });
 onClick('clear-key', async () => {
   await send({ type: 'CLEAR_KEY' });
@@ -146,7 +154,7 @@ onClick('export-diagnostic', async () => {
   const { diagnostic } = await send({ type: 'GET_DIAGNOSTICS' });
   if (!diagnostic) throw new Error('暂无诊断，请先在招聘页手动检测并进行一次字段匹配');
   downloadJSON(diagnostic, 'resume-autofill-diagnostic.json');
-  status('诊断已导出，仅包含编号、分类和拦截原因');
+  status('诊断已导出，包含编号、分类、对应关系和执行状态，不含资料值');
 });
 onClick('import-profile', () => document.getElementById('import-file').click());
 document.getElementById('import-file').addEventListener('change', async event => {

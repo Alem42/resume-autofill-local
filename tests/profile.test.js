@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
-import { normalizeProfile, profileSources, selectedSources, recordTargets, normalizeFields, validateMatches, validateReviews, API_URL, MappingValidationError, diagnosticReason } from '../shared/profile.js';
+import { normalizeProfile, profileSources, selectedSources, recordTargets, normalizeFields, validateMatches, validateReviews, API_URL, MappingValidationError, diagnosticReason, syncHighestEducation, localMatchPairs } from '../shared/profile.js';
 
 test('个人信息导入拒绝接口、密钥、未知字段与原型污染', () => {
   for (const data of [{ llm: { baseUrl: 'https://evil.invalid', apiKey: 'SECRET' } },
@@ -18,11 +18,47 @@ test('完整保留长经历，过长输入报错而非截断', () => {
   assert.throws(() => normalizeProfile({ work: Array.from({ length: 21 }, () => ({})) }));
   assert.throws(() => normalizeProfile({ skills: 'a'.repeat(20001) }));
 });
-test('资料项描述不包含资料值，敏感资料明确标记', () => {
+test('资料项描述不包含资料值，所有已填写资料统一处理而不分敏感等级', () => {
   const sources = profileSources(normalizeProfile({ basic: { name: 'PRIVATE_NAME', idCard: 'PRIVATE_ID' }, work: [{ company: 'PRIVATE_COMPANY' }] }));
-  assert.equal(sources.find(source => source.key === 'basic.idCard').sensitive, true);
-  assert.equal(sources.find(source => source.key === 'basic.name').sensitive, false);
+  assert.ok(sources.every(source => !Object.hasOwn(source, 'sensitive')));
   assert.equal(JSON.stringify(sources.map(({ id, label }) => ({ id, label }))).includes('PRIVATE_'), false);
+});
+
+test('教育布尔值保留 false 与未填写的差别，旧是/否文本迁移，日期精确到日并检查闰年', () => {
+  const profile = normalizeProfile({ education: [{ school: '演示学校', isHighest: true, doubleDegree: false, isRegular: '否', startDate: '2024-02-29', endDate: '2027-06-18' }] });
+  assert.equal(profile.education[0].isHighest, true);
+  assert.equal(profile.education[0].doubleDegree, false);
+  assert.equal(profile.education[0].isRegular, false);
+  assert.deepEqual(normalizeProfile(JSON.parse(JSON.stringify(profile))), profile);
+  assert.equal(profileSources(profile).find(source => source.fieldKey === 'doubleDegree').value, '否');
+  assert.equal(normalizeProfile({ education: [{ school: '演示学校' }] }).education[0].isHighest, '');
+  for (const value of ['2023-02-29', '2024-04-31', '2024-13', '2024-00-10', '2024-06-00']) assert.throws(() => normalizeProfile({ education: [{ startDate: value }] }));
+  assert.equal(normalizeProfile({ education: [{ startDate: '2024-09', endDate: '至今' }] }).education[0].startDate, '2024-09');
+  const legacy = normalizeProfile({ education: [{ startDate: '2020/9/7', endDate: '2024年6月18日', isRegular: '统招' }] });
+  assert.equal(legacy.education[0].startDate, '2020-09-07');
+  assert.equal(legacy.education[0].endDate, '2024-06-18');
+  assert.equal(legacy.education[0].isRegular, true);
+});
+
+test('唯一标记最高学历可同步基本学历及毕业年月，多条或缺少标记不猜测', () => {
+  const profile = normalizeProfile({ education: [{ degree: '硕士', isHighest: true, endDate: '2027-06-18' }, { degree: '本科', isHighest: false }] });
+  assert.equal(profile.basic.highestDegree, '硕士');
+  assert.equal(syncHighestEducation(profile).basic.expectedGraduationDate, '2027-06');
+  for (const education of [[{ degree: '硕士' }], [{ degree: '硕士', isHighest: true }, { degree: '本科', isHighest: true }]]) {
+    assert.throws(() => syncHighestEducation(normalizeProfile({ education })));
+  }
+});
+
+test('京东教育字段别名和基本信息能以本机规则映射，不将学历和最高学历布尔混淆', () => {
+  const profile = normalizeProfile({ basic: { name: 'DEMO_NAME', idCard: 'DEMO_ID', idType: '居民身份证' },
+    education: [{ school: '演示学校', college: '演示学院', degree: '硕士', studyMode: '全日制', majorCategory: '工学', isHighest: true, doubleDegree: false, ranking: '前30%', laboratory: '演示实验室', supervisor: '演示导师' }] });
+  const captions = ['学院名称', '学历层次', '学习形式', '专业类别', '是否最高学历', '是否双学位', '专业成绩排名', '实验室', '导师'];
+  const fields = normalizeFields(captions.map((label, index) => ({ id: `F${index}`, label, section: 'education', recordIndex: 0, componentType: 'native-input' })));
+  const sources = selectedSources(profileSources(profile), profileSources(profile).map(source => source.id));
+  const pairs = localMatchPairs(fields, sources);
+  assert.equal(pairs.length, captions.length);
+  assert.deepEqual(pairs.map(pair => sources.find(source => source.id === pair.sourceId).fieldKey),
+    ['college', 'degree', 'studyMode', 'majorCategory', 'isHighest', 'doubleDegree', 'ranking', 'laboratory', 'supervisor']);
 });
 test('只从授权资料取值，拒绝任意 selector、value、未知编号与重复映射', () => {
   const fields = normalizeFields([{ id: 'F0', label: '姓名', componentType: 'native-input' }]);

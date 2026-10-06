@@ -8,7 +8,7 @@
   <p class="notice">先确认资料范围，再预览具体字段。默认只发送字段描述与资料项名称。仅在你主动开启 AI 辅助校对后，才会发送本次勾选的资料值及对应网页字段的已有值 / 填写结果。确认写入后，网站可以读取或自动保存填写内容。</p>
   <section id="selection" class="card" hidden>
     <h2>本次允许填写的资料</h2>
-    <div class="actions"><button id="select-common" type="button">选中普通资料</button><button id="select-none" type="button">全部取消</button></div>
+    <div class="actions"><button id="select-all" type="button">全选资料</button><button id="select-none" type="button">全部取消</button></div>
     <div id="sources"></div>
     <p id="record-summary" class="notice"></p>
     <label class="check-row"><input id="relaxed" type="checkbox" checked><span>尽量填写，允许模糊匹配<small class="value">默认开启。区块、条目或措辞不明确的候选仍进入预览并默认勾选，AI 的疑点也保留供你审核。请逐项检查后再确认。取消勾选可使用严格模式。</small></span></label>
@@ -30,7 +30,7 @@
   <details id="diagnostic-panel" class="card" hidden>
     <summary>本机匹配诊断</summary>
     <p id="diagnostic-summary"></p>
-    <p class="muted">诊断只含字段编号、资料编号、分类、条目序号和拦截原因，不含个人资料值、网页字段原文、网址、API Key 或模型原始回复。只保存在本次浏览器会话，不会自动上传。</p>
+    <p class="muted">诊断只含字段编号、资料编号、分类、条目序号、对应关系、执行状态和拦截原因，不含个人资料值、网页字段原文、网址、API Key 或模型原始回复。只保存在本次浏览器会话，不会自动上传。</p>
     <button id="export-diagnostic" type="button">导出诊断 JSON</button>
   </details>
   <div class="actions"><button id="cancel" type="button">取消并关闭本页检测</button></div>

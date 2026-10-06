@@ -412,9 +412,12 @@ export function createController(api, fetchApi = globalThis.fetch) {
                 allowedSourceIds: relevant.filter(source => sourceAllowed(field, source, { relaxed: flow.relaxed })).map(source => source.id) })),
               relaxed: flow.relaxed, sources: sourcePayload(relevant, flow.aiAssist)
             }) }], config.model, config.apiKey, flow.requestId);
-            mappings.push(...validateMatches(reply, batch, relevant, { relaxed: flow.relaxed }));
-            const local = localMatchPairs(batch.filter(field => !mappings.some(mapping => mapping.fieldId === field.id)), selected);
-            mappings.push(...validateMatches(JSON.stringify({ mappings: local }), batch, selected).map(mapping => ({ ...mapping, matchedBy: 'local' })));
+            const proposed = validateMatches(reply, batch, relevant, { relaxed: flow.relaxed });
+            const local = localMatchPairs(batch, selected);
+            const resolved = validateMatches(JSON.stringify({ mappings: local }), batch, selected).map(mapping => ({ ...mapping, matchedBy: 'local' }));
+            // Exact local field + record matches take precedence over a fuzzy model choice.
+            // Unknown labels still use model suggestions and remain reviewable.
+            mappings.push(...resolved, ...proposed.filter(mapping => !resolved.some(item => item.fieldId === mapping.fieldId)));
             flow.diagnostic.counts.matched = mappings.length;
           }
           if (!mappings.length && !fields.some(field => selected.some(source => sourceAllowed(field, source, { manualUnknown: true })))) {
@@ -443,6 +446,8 @@ export function createController(api, fetchApi = globalThis.fetch) {
           flow.diagnostic.warnings = mappings.filter(mapping => mapping.conflict).map(mapping => ({ reason: mapping.conflict,
             field: fieldDiagnostic(fields.find(field => field.id === mapping.fieldId)),
             source: sourceDiagnostic(selected.find(source => source.id === mapping.sourceId)) }));
+          flow.diagnostic.mappings = mappings.map(mapping => ({ fieldId: mapping.fieldId, sourceId: mapping.sourceId,
+            matchedBy: mapping.matchedBy === 'local' ? 'local' : 'model' }));
           await putFlow(flow);
           await api.storage.session.set({ lastDiagnostic: flow.diagnostic });
           return { mappings, reviews: flow.reviews, reviewError: flow.reviewError,
@@ -518,6 +523,15 @@ export function createController(api, fetchApi = globalThis.fetch) {
           }
           flow.status = 'completed';
           flow.result = result;
+          if (flow.diagnostic) {
+            flow.diagnostic.stage = 'completed';
+            flow.diagnostic.status = 'completed';
+            const ids = new Set(flow.fields.map(field => field.id));
+            flow.diagnostic.outcomes = (result.outcomes || []).filter(item => ids.has(item.fieldId))
+              .map(item => ({ fieldId: item.fieldId, status: item.status === 'filled' ? 'filled' : 'skipped',
+                ...(['existing_value', 'field_changed', 'selection_not_committed', 'component_refused', 'range_requires_both'].includes(item.reason) ? { reason: item.reason } : {}) }));
+            await api.storage.session.set({ lastDiagnostic: flow.diagnostic });
+          }
           delete flow.mappings;
           await putFlow(flow);
           return result;

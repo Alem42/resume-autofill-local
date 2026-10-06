@@ -133,7 +133,7 @@ test('填写按扫描元素引用执行；原生事件兼容受控输入，结�
   await f.start(); await f.prepare();
   const result = await f.apply([{ fieldId: 'F0', value: 'LOCAL_NAME', componentType: 'native-input' }]);
   assert.equal(f.inputs[0].value, 'LOCAL_NAME');
-  assert.deepEqual(result, { filled: 1, skipped: 0 });
+  assert.deepEqual(result, { filled: 1, skipped: 0, outcomes: [{ fieldId: 'F0', status: 'filled' }] });
   assert.ok(f.domEvents.some(event => event.type === 'input'));
   assert.equal(f.domEvents.some(event => event.type === 'click'), false);
   assert.equal(f.domEvents.some(event => event.target === f.doc), false);

@@ -86,6 +86,18 @@ test('AI 上传默认关闭，第一次确认只传递用户实际选择的布�
   }
 });
 
+test('姓名证件地址等本地资料默认全部勾选，仍可取消并只授权剩余资料', async () => {
+  const sources = profileSources(normalizeProfile({ basic: { name: 'DEMO_NAME', idCard: 'DEMO_ID', address: 'DEMO_ADDRESS' } }));
+  const f = await confirmation({ status: 'detected', sources });
+  const boxes = f.nodes.get('sources').querySelectorAll('input');
+  assert.ok(boxes.every(box => box.checked));
+  assert.equal(f.nodes.get('sources').textContent.includes('敏感'), false);
+  boxes[1].checked = false;
+  await f.fire(f.nodes.get('match'), 'click');
+  assert.deepEqual(f.requests.find(request => request.type === 'MATCH_FIELDS').sourceIds, boxes.filter(box => box.checked).map(box => box.value));
+  assert.equal(f.requests.find(request => request.type === 'MATCH_FIELDS').aiAssist, false);
+});
+
 test('未识别区块可通过可信操作手动绑定授权资料，并更新预览实际值', async () => {
   const updated = mapping('F0', { section: 'unknown', value: 'MANUAL_LOCAL_CONTENT' });
   const f = await confirmation({ status: 'preview', mappings: [], unmatched: [{ id: 'F0', section: 'unknown', label: '详细内容' }],

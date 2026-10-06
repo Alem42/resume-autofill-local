@@ -33,7 +33,6 @@ details[open].card > summary { margin-bottom: 20px; }
 .check-row input { margin-top: 3px; }
 .check-row span { min-width: 0; flex: 1; }
 .value { display: block; color: #56657c; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 130px; overflow-y: auto; margin-top: 6px; }
-.sensitive { color: #a74b14; }
 .site { padding: 14px; background: #f0f3f9; border-radius: 8px; overflow-wrap: anywhere; font-weight: 600; }
 .sticky { position: sticky; bottom: 0; background: #f4f6fa; padding: 14px 0; border-top: 1px solid #d5deeb; }
 [hidden] { display: none !important; }

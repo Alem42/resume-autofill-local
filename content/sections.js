@@ -53,6 +53,9 @@
     for (const el of ordered(elements)) {
       const context = scope(el, hooks);
       const inferred = rules.inferSection(hooks.label(el) || el.name || '');
+      if (['other', 'unknown'].includes(context.section) && inferred === 'basic') {
+        context.section = 'basic'; context.label = rules.titles.basic;
+      }
       if (context.section === 'basic' && ['other', 'jobIntention'].includes(inferred)) {
         context.section = inferred; context.label = rules.titles[inferred];
       }
@@ -72,15 +75,28 @@
         const record = recordRoot(el, group.root);
         if (record && !distinct.includes(record)) distinct.push(record);
       }
+      // A school/project caption need not be the first field in a card: date ranges often precede it.
+      // Discover complete cards by their one anchor instead of assigning preceding dates to the last card.
+      const anchorElements = group.elements.filter(el => rules.isAnchor(group.section, hooks.label(el) || el.name));
+      if (repeated && !distinct.length) for (const anchor of anchorElements) {
+        let candidate = null;
+        for (let node = anchor.parentElement; node && node !== group.root; node = node.parentElement) {
+          if (anchorElements.filter(el => node.contains(el)).length !== 1) break;
+          if (group.elements.filter(el => node.contains(el)).length > 1) candidate = node;
+        }
+        if (candidate && !distinct.includes(candidate)) distinct.push(candidate);
+      }
       const recordIndices = new Map(ordered(distinct).map((node, index) => [node, index]));
       let index = 0, anchors = 0;
       const firstLabel = hooks.label(group.elements[0]) || group.elements[0]?.name || '';
       const anchorExists = group.elements.some(el => rules.isAnchor(group.section, hooks.label(el) || el.name));
+      const prefixDate = rules.fieldKind(firstLabel, group.section) === 'startDate';
       for (const el of group.elements) {
-        const record = recordRoot(el, group.root);
+        const record = recordRoot(el, group.root) || distinct.find(node => node.contains(el)) || null;
         if (!recordIndices.size && repeated) {
           const label = hooks.label(el) || el.name || '';
-          const starts = anchorExists ? rules.isAnchor(group.section, label) : label && label === firstLabel;
+          const starts = prefixDate ? rules.fieldKind(label, group.section) === 'startDate'
+            : anchorExists ? rules.isAnchor(group.section, label) : label && label === firstLabel;
           if (starts) { if (anchors) index++; anchors++; }
         }
         const localIndex = !repeated ? null : recordIndices.size ? recordIndices.get(record) ?? null : index;

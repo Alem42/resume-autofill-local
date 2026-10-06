@@ -14,13 +14,12 @@ function summary() {
     ? `本次所选条目：${text}。同类条目按设置页列表顺序对应网页；合并的实习 / 工作区块先工作、后实习。`
     : '本次只选择了非经历类资料。';
 }
-function checkRow(id, title, value, selected, sensitive = false) {
+function checkRow(id, title, value, selected) {
   const row = element('label', 'check-row');
   const checkbox = element('input');
   checkbox.type = 'checkbox'; checkbox.value = id; checkbox.checked = selected;
-  checkbox.dataset.sensitive = String(sensitive);
-  const text = element('span', sensitive ? 'sensitive' : '');
-  text.append(element('strong', '', title + (sensitive ? '（敏感，默认不选）' : '')), element('small', 'value', value));
+  const text = element('span', '');
+  text.append(element('strong', '', title), element('small', 'value', value));
   row.append(checkbox, text);
   return row;
 }
@@ -120,7 +119,7 @@ async function refresh() {
         root.append(group); groups.set(source.section, group);
       }
       groups.get(source.section).append(checkRow(source.id, source.label, source.value,
-        savedSelection ? savedSelection.includes(source.id) : !source.sensitive, source.sensitive));
+        savedSelection ? savedSelection.includes(source.id) : true));
     }
     summary();
     status(data.flowError || '默认不开启 AI 内容上传。请核对资料范围与自动添加选项后继续。', Boolean(data.flowError));
@@ -149,9 +148,17 @@ function finish(result) {
     const mapping = currentData.mappings?.find(mapping => mapping.fieldId === review.fieldId);
     reviews.append(element('p', 'review-note ' + review.status, `${mapping?.fieldLabel || review.fieldId}：${reviewText(review)}`));
   }
+  const skipReasons = { existing_value: '已有内容，本次保留', field_changed: '字段结构已变化，请重新检测',
+    selection_not_committed: '组件未确认选中，请检查下拉候选或日期', component_refused: '组件未接受填写事件',
+    range_requires_both: '共享日期范围需要同时确认开始和结束两个字段' };
+  for (const item of result.outcomes || []) if (item.status === 'skipped') {
+    const mapping = currentData.mappings?.find(mapping => mapping.fieldId === item.fieldId);
+    reviews.append(element('p', 'review-note warning', `${mapping?.fieldLabel || item.fieldId}：${skipReasons[item.reason] || '未完成填写，请检查网页'}`));
+    document.getElementById('after-review').hidden = false;
+  }
   status(`已填写 ${result.filled} 个字段，跳过 ${result.skipped} 个。请回到网页检查并自行提交。`);
 }
-onClick('select-common', () => { document.querySelectorAll('#sources input').forEach(input => { input.checked = input.dataset.sensitive !== 'true'; }); summary(); });
+onClick('select-all', () => { document.querySelectorAll('#sources input').forEach(input => { input.checked = true; }); summary(); });
 onClick('select-none', () => { document.querySelectorAll('#sources input').forEach(input => { input.checked = false; }); summary(); });
 document.getElementById('sources').addEventListener('change', event => { if (event.isTrusted) summary(); });
 onClick('match', async () => {
