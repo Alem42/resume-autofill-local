@@ -609,7 +609,7 @@
         const input = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ? el : el.querySelector('input:not([type="hidden"]), textarea');
         if (!input || !eligibleElement(input)) return false;
         // Short scalar fields may search a dropdown even when their markup resembles an ordinary input.
-        const narrative = /描述|职责|贡献|成果|自我评价|介绍|说明|description|responsibilit|achievement/i.test(getLabelText(input));
+        const narrative = /描述|自我评价|介绍|说明|description|summary/i.test(getLabelText(input));
         if (input.tagName === 'INPUT' && ['text', 'search', 'email', 'tel', 'url', 'number'].includes(input.type) && value.length <= 500 && !narrative) {
           return componentControls.fillChoice(input, value, { plain: true });
         }

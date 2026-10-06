@@ -94,6 +94,13 @@ test('项目描述长文本不点击输入框或任何候选菜单', async () =>
   assert.equal(f.events.some(event => event.type === 'click'), false);
 });
 
+test('项目职责等短字段仍检查候选，不因字段名含职责就当成长描述', async () => {
+  const f = selectFixture({ caption: '项目职责', type: 'text', signal: false, value: '独立项目', options: ['独立项目', '团队项目'] });
+  const { result } = await fillOne(f);
+  assert.equal(result.filled, 1); assert.equal(f.chosen, '独立项目');
+  assert.equal(result.outcomes[0].dropdownDetected, true);
+});
+
 test('其他已打开的下拉菜单不作为当前字段的候选，取消后不再点击', async () => {
   const f = selectFixture({ options: ['没有对应的学校'], commit: true });
   const otherMenu = f.node('div', { class: 'bili-select-dropdown' }), other = f.node('div', { class: 'bili-select-dropdown-item' }, '演示大学');
