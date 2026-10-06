@@ -8,7 +8,7 @@ let savedSelection = null;
 function checked(root) { return [...document.querySelectorAll(`#${root} input:checked`)].map(input => input.value); }
 function summary() {
   const targets = recordTargets(selectedSources(currentData.sources || [], checked('sources')));
-  const text = Object.entries(targets).filter(([key]) => key !== 'employment')
+  const text = Object.entries(targets).filter(([key]) => !['employment', 'qualifications'].includes(key))
     .map(([key, count]) => `${PROFILE_SCHEMA[key].title} ${count} 条`).join('；');
   document.getElementById('record-summary').textContent = text
     ? `本次所选条目：${text}。同类条目按设置页列表顺序对应网页；合并的实习 / 工作区块先工作、后实习。`
@@ -33,7 +33,7 @@ function sourceChooser(fieldId, parent, onChanged) {
   const choices = entry?.sources || [];
   if (!choices.length) return;
   const details = element('details', 'mapping-adjust');
-  details.append(element('summary', '', entry.section === 'unknown' ? '区块不明确，请手动指定对应资料' : '调整对应资料（仅本区块和本条目）'));
+  details.append(element('summary', '', currentData.relaxed ? '调整对应资料（可从本次授权资料中选择）' : entry.section === 'unknown' ? '区块不明确，请手动指定对应资料' : '调整对应资料（仅本区块和本条目）'));
   const select = element('select');
   const empty = element('option', '', '选择对应资料'); empty.value = ''; select.append(empty);
   for (const source of choices) { const option = element('option', '', source.label); option.value = source.id; select.append(option); }
@@ -59,16 +59,17 @@ function mappingRow(mapping) {
   const review = currentData.reviews?.find(item => item.fieldId === mapping.fieldId);
   const protectedValue = mapping.hasValue && !currentData.overwrite;
   const row = checkRow(mapping.fieldId, `${mapping.fieldLabel} ← ${mapping.sourceLabel}${protectedValue ? '（已有内容，本次保留）' : ''}`,
-    mapping.value, !protectedValue && !(currentData.aiAssist && currentData.reviewError)
-      && !['warning', 'uncertain'].includes(review?.status));
+    mapping.value, !protectedValue && (currentData.relaxed || (!(currentData.aiAssist && currentData.reviewError)
+      && !['warning', 'uncertain'].includes(review?.status))));
   row.querySelector('input').disabled = protectedValue;
   const text = row.querySelector('span');
-  const note = element('small', 'review-note ' + (review?.status || ''), reviewText(review)); text.append(note);
+  const note = element('small', 'review-note ' + (mapping.needsReview ? 'warning' : review?.status || ''),
+    [mapping.matchedBy === 'local' && '本机规则补齐', mapping.warning && `待审核：${mapping.warning}`, reviewText(review)].filter(Boolean).join('；')); text.append(note);
   const wrap = element('div', 'mapping-row'); wrap.append(row);
   sourceChooser(mapping.fieldId, wrap, updated => {
     text.querySelector('strong').textContent = `${updated.fieldLabel} ← ${updated.sourceLabel}${protectedValue ? '（已有内容，本次保留）' : ''}`;
     text.querySelector('.value').textContent = updated.value;
-    note.textContent = '已手动修改对应关系，请自行核对。';
+    note.textContent = [updated.warning, '已手动修改对应关系，请自行核对。'].filter(Boolean).join('；');
   });
   return wrap;
 }
@@ -82,9 +83,10 @@ function preview(data) {
   const report = document.getElementById('preparation-report'); report.replaceChildren();
   for (const item of data.addReports || []) report.append(element('p', item.message ? 'review-note warning' : 'muted',
     `${item.title}：新增 ${item.added} 条。${item.message}`));
+  if (data.relaxed) report.append(element('p', 'notice', '模糊匹配已开启：候选和 AI 疑点默认勾选，请逐项审核并取消不需要的字段。已有内容仍按覆盖选项处理。'));
   if (data.aiAssist) report.append(element('p', 'notice', data.reviewError
     ? `AI 校对未完成：${data.reviewError}。请人工核对后决定是否填写。`
-    : '有疑点或不确定的字段默认不选；已有内容默认保留。确认后还会校对实际填写结果。'));
+    : data.relaxed ? 'AI 校对意见供你审核，不会取消候选。确认后还会校对实际填写结果。' : '有疑点或不确定的字段默认不选；已有内容默认保留。确认后还会校对实际填写结果。'));
   const unmatched = document.getElementById('unmatched'); unmatched.replaceChildren();
   document.getElementById('unmatched-panel').hidden = !data.unmatched?.length;
   for (const field of data.unmatched || []) {
@@ -161,7 +163,8 @@ onClick('match', async () => {
   polling = setTimeout(() => refresh().catch(error => status(error.message, true)), 500);
   try {
     await send({ type: 'MATCH_FIELDS', requestId, sourceIds, overwrite: document.getElementById('overwrite').checked,
-      autoAdd: document.getElementById('auto-add').checked, aiAssist: document.getElementById('ai-assist').checked });
+      autoAdd: document.getElementById('auto-add').checked, aiAssist: document.getElementById('ai-assist').checked,
+      relaxed: document.getElementById('relaxed').checked });
     clearTimeout(polling);
     if (state !== 'preview') { state = ''; await refresh(); }
   } catch (error) {

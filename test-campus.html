@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>校招表单布局测试</title><style>
+body{font-family:"Microsoft YaHei",sans-serif;max-width:1100px;margin:30px auto;padding:0 20px;color:#172338}nav{display:flex;gap:20px;flex-wrap:wrap;border-bottom:1px solid #ddd;padding:18px 0}a{color:#245bdc;cursor:pointer}.resumeRow___demo{display:grid;grid-template-columns:230px 1fr;gap:30px;padding:30px 0;border-bottom:1px solid #ddd}.blockTitle___demo{font-size:26px;font-weight:bold}.entryList___demo{display:grid;grid-template-columns:1fr 1fr;gap:20px}.entry___demo{grid-column:1/-1;border:1px solid #ddd;padding:18px;display:grid;grid-template-columns:1fr 1fr;gap:20px}.caption___demo{margin-bottom:10px}input:not([type=radio]),textarea{box-sizing:border-box;width:100%;padding:9px;border:1px solid #ccc;border-radius:4px}textarea{min-height:70px}.plainAction___demo{display:block;margin-top:20px;max-width:125px;border:1px solid #ccc;padding:10px;text-align:center}.notice{background:#eef3ff;padding:16px;line-height:1.7}@media(max-width:700px){.resumeRow___demo{grid-template-columns:1fr}.entryList___demo,.entry___demo{grid-template-columns:1fr}}
+</style></head><body>
+<h1>校招表单布局测试</h1>
+<p class="notice">根据反馈截图制作的模拟布局，不是京东官网镜像。区块标题和字段名使用普通 div，按钮只写“+ 添加”。可导入 <code>examples/profile.example.json</code> 并保存，在扩展确认窗口启用自动补足和模糊匹配。只用于虚构资料测试；<code>?async</code> 可模拟延迟渲染。</p>
+<nav><a href="#basic">基本信息</a><a href="#education">教育经历</a><a href="#internships">实习经历</a><a href="#campus">校园经历</a><a href="#projects">项目经历</a><a href="#awards">荣誉奖励</a></nav>
+<div class="resumeRow___demo" id="basic"><div class="blockTitle___demo">基本信息*</div><div>
+<div class="entryList___demo">
+<div class="gridCell___demo"><div class="caption___demo">* 姓名:</div><input placeholder="请输入"></div>
+<div class="gridCell___demo"><div class="caption___demo">* 性别:</div><label><input type="radio" name="gender" value="1">男</label> <label><input type="radio" name="gender" value="2">女</label></div>
+<div class="gridCell___demo"><div class="caption___demo">* 手机号码:</div><input type="tel" placeholder="请输入"></div>
+<div class="gridCell___demo"><div class="caption___demo">* 电子邮箱:</div><input type="email" placeholder="请输入"></div>
+<div class="gridCell___demo"><div class="caption___demo">预计毕业时间:</div><input type="month"></div>
+<div class="gridCell___demo"><div class="caption___demo">民族:</div><input placeholder="请选择民族"></div>
+</div></div></div>
+<div id="experience-sections"></div>
+<script>
+const schemas = {
+ education:['教育经历*',['学校名称','专业','学历','学位名称','开始时间','结束时间']],
+ internships:['实习经历',['实习公司','实习岗位','开始时间','结束时间','实习描述']],
+ campus:['校园经历',['活动名称','组织','担任职务','开始时间','结束时间','活动内容']],
+ projects:['项目经历',['项目名称','担任角色','开始时间','结束时间','项目描述','个人贡献','项目成果']],
+ awards:['荣誉奖励',['奖项名称','奖项类别','奖项级别','奖项等级','获奖时间','获奖内容']],
+ publications:['论文/期刊',['论文题目','期刊名称','发表时间']],
+ patents:['发明成果专利',['专利名称','专利号','申请时间']],
+ languageCertificates:['语言考试',['语种','考试名称','考试成绩']]
+};
+for(const [key,[title,fields]] of Object.entries(schemas)){
+ const section=document.createElement('div');section.id=key;section.className='resumeRow___demo';
+ const heading=document.createElement('div');heading.className='blockTitle___demo';heading.textContent=title;
+ const body=document.createElement('div'),list=document.createElement('div');list.className='entryList___demo';
+ const add=document.createElement('a');add.href='javascript:void(0)';add.className='plainAction___demo';add.textContent='+ 添加';
+ const insert=()=>{
+   const record=document.createElement('div');record.className='entry___demo';record.dataset.record='';
+   for(const text of fields){const row=document.createElement('div');row.className='gridCell___demo';
+     const caption=document.createElement('div');caption.className='caption___demo';caption.textContent=text+':';
+     const input=document.createElement(/描述|贡献|成果|内容/.test(text)?'textarea':'input');input.placeholder='请输入';
+     if(/开始时间|结束时间|获奖时间|发表时间|申请时间/.test(text))input.type='month';row.append(caption,input);record.append(row);}
+   list.append(record);
+ };
+ add.addEventListener('click',event=>{event.preventDefault();if(location.search.includes('async'))setTimeout(insert,350);else insert();});
+ body.append(list,add);section.append(heading,body);document.getElementById('experience-sections').append(section);
+}
+</script></body></html>

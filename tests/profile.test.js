@@ -148,3 +148,30 @@ test('映射拦截提供准确的区块、条目和字段原因，诊断不包�
     });
   }
 });
+
+test('模糊模式保留跨分类、未知经历和条目候选供审核，但不接受自造值或未授权编号', () => {
+  const sources = profileSources(normalizeProfile({ education: [{ school: 'PRIVATE_SCHOOL' }, { school: 'PRIVATE_SECOND' }] }));
+  for (const field of [
+    { id: 'F0', section: 'unknown', label: '学习单位', recordIndex: null, componentType: 'native-input' },
+    { id: 'F0', section: 'work', label: '单位名称', recordIndex: 0, componentType: 'native-input' },
+    { id: 'F0', section: 'education', label: '学校名称', recordIndex: 1, componentType: 'native-input' }
+  ]) {
+    const fields = normalizeFields([field]), reply = '{"mappings":[{"fieldId":"F0","sourceId":"S0"}]}';
+    assert.throws(() => validateMatches(reply, fields, sources));
+    const mapping = validateMatches(reply, fields, sources, { relaxed: true })[0];
+    assert.equal(mapping.value, 'PRIVATE_SCHOOL'); assert.equal(mapping.needsReview, true); assert.ok(mapping.warning);
+  }
+  const fields = normalizeFields([{ id: 'F0', componentType: 'native-input', label: '学校' }]);
+  for (const mapping of [{ fieldId: 'F0', sourceId: 'S0', value: 'invented' }, { fieldId: 'F0', sourceId: 'S99' }, { fieldId: 'F99', sourceId: 'S0' }, { fieldId: 'F0', sourceId: 'S0', selector: '#password' }]) {
+    assert.throws(() => validateMatches(JSON.stringify({ mappings: [mapping] }), fields, sources, { relaxed: true }));
+  }
+});
+
+test('语言/证书/技能合并区块按语言考试和资格证书的连续顺序对应', () => {
+  const all = profileSources(normalizeProfile({ languageCertificates: [{ exam: 'CET-6' }], professionalCertificates: [{ name: '演示资格证书' }] }));
+  const sources = selectedSources(all, all.map(source => source.id));
+  assert.equal(recordTargets(sources).qualifications, 2);
+  const fields = normalizeFields([{ id: 'F0', section: 'qualifications', recordIndex: 1, label: '名称', componentType: 'native-input' }]);
+  const mapping = validateMatches(JSON.stringify({ mappings: [{ fieldId: 'F0', sourceId: sources[1].id }] }), fields, sources)[0];
+  assert.equal(mapping.value, '演示资格证书');
+});

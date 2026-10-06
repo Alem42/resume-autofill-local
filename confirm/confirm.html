@@ -11,6 +11,7 @@
     <div class="actions"><button id="select-common" type="button">选中普通资料</button><button id="select-none" type="button">全部取消</button></div>
     <div id="sources"></div>
     <p id="record-summary" class="notice"></p>
+    <label class="check-row"><input id="relaxed" type="checkbox" checked><span>尽量填写，允许模糊匹配<small class="value">默认开启。区块、条目或措辞不明确的候选仍进入预览并默认勾选，AI 的疑点也保留供你审核。请逐项检查后再确认。取消勾选可使用严格模式。</small></span></label>
     <label class="check-row"><input id="auto-add" type="checkbox" checked><span>自动补足缺少的经历条目<small class="value">确认后按所选资料数量点击明确的“添加教育 / 项目 / 实习 / 获奖”等按钮，只创建空表单。不点击保存、上传或投递；取消不会移除已添加的空条目。</small></span></label>
     <label class="check-row"><input id="ai-assist" type="checkbox"><span>允许发送所选资料值，启用 AI 辅助判断与校对<small class="value">默认关闭。勾选后会将本次允许的资料值、对应字段的已有值及填写后读回的结果发送给 DeepSeek，以理解不同网站的措辞。会增加 API 调用和费用；判断仅供参考，不会编造或改写经历。</small></span></label>
     <label class="check-row"><input id="overwrite" type="checkbox"><span>允许覆盖已有内容<small class="value">默认保留已有值。AI 校对可指出差异，但不会擅自覆盖。</small></span></label>

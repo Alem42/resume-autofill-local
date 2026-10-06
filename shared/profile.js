@@ -183,11 +183,13 @@ export function selectedSources(sources, ids) {
     if (!indices.has(source.section)) indices.set(source.section, []);
     if (!indices.get(source.section).includes(source.recordIndex)) indices.get(source.section).push(source.recordIndex);
   }
-  const workCount = indices.get('work')?.length || 0;
+  const workCount = indices.get('work')?.length || 0, languageCount = indices.get('languageCertificates')?.length || 0;
   return selected.map(source => ({ ...source,
     slotIndex: source.recordIndex === null ? null : indices.get(source.section).indexOf(source.recordIndex),
     employmentIndex: source.section === 'work' ? indices.get('work').indexOf(source.recordIndex)
-      : source.section === 'internships' ? workCount + indices.get('internships').indexOf(source.recordIndex) : null }));
+      : source.section === 'internships' ? workCount + indices.get('internships').indexOf(source.recordIndex) : null,
+    qualificationsIndex: source.section === 'languageCertificates' ? indices.get('languageCertificates').indexOf(source.recordIndex)
+      : source.section === 'professionalCertificates' ? languageCount + indices.get('professionalCertificates').indexOf(source.recordIndex) : null }));
 }
 
 export function recordTargets(sources) {
@@ -196,6 +198,7 @@ export function recordTargets(sources) {
     targets[source.section] = Math.max(targets[source.section] || 0, (source.slotIndex ?? source.recordIndex) + 1);
   }
   if (targets.work || targets.internships) targets.employment = (targets.work || 0) + (targets.internships || 0);
+  if (targets.languageCertificates || targets.professionalCertificates) targets.qualifications = (targets.languageCertificates || 0) + (targets.professionalCertificates || 0);
   return targets;
 }
 
@@ -203,12 +206,14 @@ export function sourceConflict(field, source, { manualUnknown = false } = {}) {
   const section = field.section || semantics.inferSection([field.label, field.name, field.placeholder].join(' '));
   if (section === 'employment') {
     if (!['work', 'internships'].includes(source.section)) return 'section_mismatch';
+  } else if (section === 'qualifications') {
+    if (!['languageCertificates', 'professionalCertificates'].includes(source.section) && !['languages', 'certificates', 'skills'].includes(source.key)) return 'section_mismatch';
   } else if (section !== 'unknown' && section !== source.section && !(section === 'languageCertificates' && source.key === 'languages')
     && !(section === 'professionalCertificates' && source.key === 'certificates')) return 'section_mismatch';
   else if (section === 'unknown' && source.recordIndex !== null && !manualUnknown) return 'unknown_section';
   if (source.recordIndex !== null) {
     if (field.recordIndex == null && !(section === 'unknown' && manualUnknown)) return 'unknown_record';
-    const index = section === 'employment' ? source.employmentIndex : source.slotIndex ?? source.recordIndex;
+    const index = section === 'employment' ? source.employmentIndex : section === 'qualifications' ? source.qualificationsIndex : source.slotIndex ?? source.recordIndex;
     if (field.recordIndex !== index && !(section === 'unknown' && manualUnknown)) return 'record_mismatch';
   }
   const kind = semantics.fieldKind(field.label || field.name || field.placeholder, section);
@@ -219,7 +224,20 @@ export function sourceConflict(field, source, { manualUnknown = false } = {}) {
   return !kind || source.fieldKey === kind ? null : 'field_mismatch';
 }
 export function sourceAllowed(field, source, options) {
+  if (options?.relaxed === true) return true;
   return sourceConflict(field, source, options) === null;
+}
+
+export function localMatchPairs(fields, sources) {
+  const cleanLabel = value => String(value || '').replace(/（[^）]*）|\([^)]*\)/g, '').replace(/[\s*＊：:]/g, '')
+    .replace(/^(?:请输入|请选择|请填写)/, '').toLowerCase();
+  return fields.flatMap(field => {
+    const kind = semantics.fieldKind(field.label || field.name || field.placeholder, field.section);
+    const candidates = sources.filter(source => sourceAllowed(field, source) && (kind
+      ? source.fieldKey === kind || (kind === 'degree' && field.section === 'basic' && source.fieldKey === 'highestDegree')
+      : cleanLabel(field.label || field.placeholder || field.name) === cleanLabel(PROFILE_SCHEMA[source.section]?.fields[source.fieldKey] || TEXT_FIELDS[source.fieldKey])));
+    return candidates.length === 1 ? [{ fieldId: field.id, sourceId: candidates[0].id }] : [];
+  });
 }
 
 export function fieldDiagnostic(field) {
@@ -229,14 +247,14 @@ export function fieldDiagnostic(field) {
 }
 export function sourceDiagnostic(source) {
   return { id: source.id, section: source.section, recordIndex: source.slotIndex ?? source.recordIndex,
-    employmentIndex: source.employmentIndex ?? null, fieldKey: source.fieldKey };
+    employmentIndex: source.employmentIndex ?? null, qualificationsIndex: source.qualificationsIndex ?? null, fieldKey: source.fieldKey };
 }
 export function diagnosticReason(detail) {
   const field = detail.field, source = detail.source;
   const title = (section, key) => PROFILE_SCHEMA[section]?.fields[key] || TEXT_FIELDS[key] || key;
   const slot = index => index == null ? '条目未知' : `第 ${index + 1} 条`;
   const from = `${semantics.titles[field.section]} / ${slot(field.recordIndex)}`;
-  const to = `${semantics.titles[source.section]} / ${slot(field.section === 'employment' ? source.employmentIndex : source.recordIndex)}`;
+  const to = `${semantics.titles[source.section]} / ${slot(field.section === 'employment' ? source.employmentIndex : field.section === 'qualifications' ? source.qualificationsIndex : source.recordIndex)}`;
   const reasons = {
     section_mismatch: `网页识别为${from}，模型选择了${to}`,
     record_mismatch: `网页是${from}，模型选择了${to}`,
@@ -256,7 +274,7 @@ export class MappingValidationError extends Error {
   }
 }
 
-const TYPES = new Set(['native-input', 'native-select', 'contenteditable', 'wrapper-input', 'custom-dropdown', 'custom-datepicker', 'custom-interactive']);
+const TYPES = new Set(['native-input', 'native-select', 'native-radio', 'contenteditable', 'wrapper-input', 'custom-dropdown', 'custom-datepicker', 'custom-interactive']);
 export function normalizeFields(fields) {
   if (!Array.isArray(fields) || fields.length > MAX_FIELDS) throw new Error(`一次最多检测 ${MAX_FIELDS} 个字段`);
   const seen = new Set();
@@ -271,7 +289,7 @@ export function normalizeFields(fields) {
   });
 }
 
-export function validateMatches(reply, fields, sources, { manualUnknown = false } = {}) {
+export function validateMatches(reply, fields, sources, { manualUnknown = false, relaxed = false } = {}) {
   if (typeof reply !== 'string' || reply.length > 65536) throw new Error('模型返回内容异常');
   let data;
   try { data = JSON.parse(reply); } catch { throw new Error('模型没有返回有效 JSON，请重试'); }
@@ -288,10 +306,11 @@ export function validateMatches(reply, fields, sources, { manualUnknown = false 
     const source = sourceMap.get(mapping.sourceId);
     if (!field || !source || seen.has(field.id)) throw new Error('模型引用了未授权或重复的资料项');
     const conflict = sourceConflict(field, source, { manualUnknown });
-    if (conflict) throw new MappingValidationError(field, source, conflict);
+    if (conflict && !relaxed) throw new MappingValidationError(field, source, conflict);
     seen.add(field.id);
     return { fieldId: field.id, sourceId: source.id, fieldLabel: field.label || field.placeholder || field.name || field.id,
       section: field.section, recordIndex: field.recordIndex, hasValue: field.hasValue,
+      ...(conflict ? { needsReview: true, warning: diagnosticReason({ reason: conflict, field: fieldDiagnostic(field), source: sourceDiagnostic(source) }), conflict } : {}),
       sourceLabel: source.label, value: source.value, componentType: field.componentType };
   });
 }

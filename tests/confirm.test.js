@@ -76,10 +76,12 @@ test('AI 上传默认关闭，第一次确认只传递用户实际选择的布�
   for (const assisted of [false, true]) {
     const f = await confirmation({ status: 'detected', sources: profileSources(normalizeProfile({ basic: { name: 'LOCAL_DEMO' } })) });
     assert.equal(f.nodes.get('ai-assist').checked, false); assert.equal(f.nodes.get('auto-add').checked, true);
+    assert.equal(f.nodes.get('relaxed').checked, true);
     f.nodes.get('ai-assist').checked = assisted;
     await f.fire(f.nodes.get('match'), 'click');
     const message = f.requests.find(request => request.type === 'MATCH_FIELDS');
     assert.equal(message.aiAssist, assisted); assert.equal(message.autoAdd, true); assert.equal(message.overwrite, false);
+    assert.equal(message.relaxed, true);
     assert.deepEqual(message.sourceIds, ['S0']);
   }
 });
@@ -113,4 +115,14 @@ test('匹配失败时可见诊断并只导出后台返回的诊断数据，不�
   const request = f.requests.find(request => request.type === 'GET_DIAGNOSTICS');
   assert.equal(request.requestId, 'request-1');
   assert.equal(/PRIVATE_|private-path/.test(JSON.stringify(f.downloads)), false);
+});
+
+test('模糊模式默认选中候选及AI疑点，但保护已有内容并显示待审核原因', async () => {
+  const f = await confirmation({ status: 'preview', mappings: [mapping('F0', { needsReview: true, warning: '网页区块不明确' }), mapping('F1'), mapping('F2', { hasValue: true })],
+    reviews: [{ fieldId: 'F0', status: 'warning', reason: '可能不匹配' }, { fieldId: 'F1', status: 'uncertain', reason: '不能确定' }],
+    relaxed: true, aiAssist: true, reviewError: '接口超时', overwrite: false });
+  const inputs = f.nodes.get('mappings').querySelectorAll('input');
+  assert.deepEqual(inputs.map(input => Boolean(input.checked)), [true, true, false]);
+  assert.equal(inputs[2].disabled, true); assert.ok(f.nodes.get('mappings').textContent.includes('网页区块不明确'));
+  assert.ok(f.nodes.get('preparation-report').textContent.includes('模糊匹配已开启'));
 });

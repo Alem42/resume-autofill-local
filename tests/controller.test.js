@@ -291,7 +291,7 @@ test('未经确认不能自动添加或读已有值，非布尔辅助开关被�
   const f = fixture();
   for (const type of ['ENSURE_RECORDS', 'READ_VALUES', 'CHANGE_MAPPING']) await assert.rejects(f.controller.handle({ type }, page));
   const flow = await f.detect();
-  for (const flag of ['aiAssist', 'autoAdd']) await assert.rejects(f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false, [flag]: 'true' }, flow.sender));
+  for (const flag of ['aiAssist', 'autoAdd', 'relaxed']) await assert.rejects(f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false, [flag]: 'true' }, flow.sender));
   assert.equal(f.requests.length, 0); assert.equal(f.outgoing.some(item => item.message?.type === 'ENSURE_RECORDS'), false);
 });
 
@@ -375,4 +375,25 @@ test('格式异常和接口失败只记录固定诊断代码，不记录模型�
   assert.equal(diagnostic.failureCode, 'MATCH_FAILED');
   assert.equal(/PRIVATE_|DUMMY_DEEPSEEK_KEY/.test(JSON.stringify(diagnostic)), false);
   assert.equal(diagnostic.rejection, undefined);
+});
+
+test('模糊模式允许未知经历进入预览，资料仍只从所选本地项取值且必须二次确认', async () => {
+  const profile = normalizeProfile({ education: [{ school: 'PRIVATE_DEMO_SCHOOL' }], basic: { idCard: 'PRIVATE_UNSELECTED_ID' } });
+  const source = profileSources(profile).find(source => source.fieldKey === 'school');
+  const f = fixture({ profile, fields: [{ id: 'F0', section: 'unknown', label: '学习单位', componentType: 'native-input' }], fetcher: async (url, init) => {
+    const input = JSON.parse(JSON.parse(init.body).messages[1].content);
+    assert.equal(input.relaxed, true); assert.deepEqual(input.fields[0].allowedSourceIds, [source.id]);
+    assert.equal(init.body.includes('PRIVATE_'), false);
+    return modelResponse({ mappings: [{ fieldId: 'F0', sourceId: source.id }] });
+  } });
+  const flow = await f.detect();
+  const result = await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: [source.id], relaxed: true, overwrite: false }, flow.sender);
+  assert.equal(result.mappings[0].value, 'PRIVATE_DEMO_SCHOOL'); assert.equal(result.mappings[0].needsReview, true);
+  assert.equal(f.outgoing.some(item => item.message?.type === 'APPLY_FIELDS'), false);
+  const preview = await f.controller.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, flow.sender);
+  assert.equal(preview.relaxed, true); assert.equal(preview.choices[0].sources.length, 1);
+  const { diagnostic } = await f.controller.handle({ type: 'GET_DIAGNOSTICS' }, options);
+  assert.equal(diagnostic.warnings[0].reason, 'unknown_section'); assert.equal(JSON.stringify(diagnostic).includes('PRIVATE_'), false);
+  await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0'] }, flow.sender);
+  assert.equal(f.outgoing.find(item => item.message?.type === 'APPLY_FIELDS').message.mappings[0].value, 'PRIVATE_DEMO_SCHOOL');
 });

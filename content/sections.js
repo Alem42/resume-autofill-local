@@ -2,16 +2,28 @@
 (() => {
   if (globalThis.__resumeSections) return;
   const rules = globalThis.__resumeSemantics;
-  const HEADINGS = 'h1,h2,h3,h4,h5,h6,legend,header,[role="heading"],[class*="section-title"],[class*="card-title"],[class*="card-header"],[class*="form-title"]';
+  const HEADINGS = 'h1,h2,h3,h4,h5,h6,legend,header,strong,[role="heading"],[class*="title"],[class*="Title"],[class*="header"],[class*="Header"],div,span,p';
   const RECORDS = '[data-record],fieldset,[class*="form-multiple"],[class*="experience-item"],[class*="record-item"],[class*="education-item"],[class*="project-item"],[class*="experience-card"]';
-  const CONTROLS = 'button,[role="button"],[onclick],[class*="add"],a';
+  const CONTROLS = 'button,[role="button"],[onclick],[class*="add"],[class*="Add"],a';
   const textOf = (node, hooks) => hooks.text(node).replace(/\s+/g, ' ').trim().slice(0, 100);
+  function headingsIn(root, hooks) {
+    if (hooks.headingCache?.has(root)) return hooks.headingCache.get(root);
+    const found = [...root.querySelectorAll(HEADINGS)].filter(node => {
+      if (!hooks.visible(node) || node.closest('nav,[role="navigation"],a[href]')
+        || node.querySelector('input,select,textarea,[contenteditable],button,[role="button"]')) return false;
+      const text = textOf(node, hooks);
+      // CSS-module titles may be plain div/span nodes. Only short title-shaped text qualifies.
+      return text.length <= 35 && !/[。！？.!?]/.test(text) && rules.headingSection(text) !== 'unknown';
+    }).filter(node => ![...node.children].some(child => textOf(child, hooks) === textOf(node, hooks)));
+    hooks.headingCache?.set(root, found);
+    return found;
+  }
   function scope(el, hooks) {
     for (let node = el.parentElement, depth = 0; node && node !== document.body && depth < 14; node = node.parentElement, depth++) {
       const explicit = node.getAttribute('data-section');
       if (explicit && rules.titles[explicit] && explicit !== 'unknown') return { root: node, section: explicit, label: rules.titles[explicit] };
-      const headings = [...node.querySelectorAll(HEADINGS)].filter(heading => hooks.visible(heading));
-      const known = headings.map(heading => ({ heading, section: rules.section(textOf(heading, hooks)) })).filter(item => item.section !== 'unknown');
+      const headings = headingsIn(node, hooks);
+      const known = headings.map(heading => ({ heading, section: rules.headingSection(textOf(heading, hooks)) })).filter(item => item.section !== 'unknown');
       const kinds = new Set(known.map(item => item.section));
       if (kinds.size === 1) return { root: node, section: known[0].section, label: textOf(known[0].heading, hooks) };
       // Do not turn an ancestor containing several sections into a single category.
@@ -35,6 +47,7 @@
     });
   }
   function inspect(elements, hooks) {
+    hooks = { ...hooks, headingCache: new Map() };
     const result = new Map();
     const roots = new Map();
     for (const el of ordered(elements)) {
@@ -82,9 +95,9 @@
   }
   function addControl(el, hooks) {
     if (!el?.isConnected || el.ownerDocument !== document || el.disabled || !hooks.visible(el)
-      || el.closest('[inert],[aria-hidden="true"]') || el.getAttribute('aria-disabled') === 'true') return null;
+      || el.closest('[inert],[aria-hidden="true"],nav,[role="navigation"]') || el.getAttribute('aria-disabled') === 'true') return null;
     if (el.tagName === 'INPUT') return null;
-    if (el.tagName === 'A' && el.getAttribute('href')) return null;
+    if (el.tagName === 'A' && el.getAttribute('href') && !/^(#|javascript:void\(0\);?)$/i.test(el.getAttribute('href').trim())) return null;
     if (el.tagName === 'BUTTON' && (el.type === 'submit' || el.type === 'reset'
       || (!el.getAttribute('type') && el.closest('form')))) return null;
     const label = textOf(el, hooks);
@@ -98,6 +111,7 @@
     return { element: el, label, section, root: context.root };
   }
   function controls(hooks) {
+    hooks = { ...hooks, headingCache: new Map() };
     const candidates = [...document.querySelectorAll(CONTROLS)].map(el => addControl(el, hooks)).filter(Boolean);
     return candidates.filter(candidate => !candidates.some(other => other !== candidate && other.section === candidate.section
       && other.root === candidate.root && other.element.contains(candidate.element)));
@@ -142,7 +156,8 @@
       if (before < desired && !report.message) report.message = '已达到本次添加上限，请手动补足或重新确认。';
     }
     for (const [section, desired] of Object.entries(targets)) {
-      if (section === 'employment' || !desired || sections.has(section)
+      if (['employment', 'qualifications'].includes(section) || !desired || sections.has(section)
+        || (['languageCertificates', 'professionalCertificates'].includes(section) && sections.has('qualifications'))
         || (['work', 'internships'].includes(section) && sections.has('employment'))) continue;
       const existing = inspect(hooks.elements(), hooks).counts[section] || 0;
       if (existing < desired) reports.push({ section, title: rules.titles[section], requested: desired, existing, added: 0,

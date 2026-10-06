@@ -4,7 +4,7 @@
   const titles = Object.freeze({ basic: '基本信息', education: '教育经历', work: '工作经历',
     internships: '实习经历', employment: '实习 / 工作经历', projects: '项目经历', awards: '获奖信息',
     campus: '校园经历', research: '科研经历', publications: '论文发表', patents: '专利信息',
-    languageCertificates: '语言考试', professionalCertificates: '资格证书', training: '培训经历',
+    languageCertificates: '语言考试', professionalCertificates: '资格证书', qualifications: '语言 / 证书 / 技能', training: '培训经历',
     volunteer: '志愿经历', portfolio: '作品集', jobIntention: '求职意向', other: '其他信息', unknown: '未识别区块' });
   const patterns = {
     education: /教育(?:经历|背景|信息)|学习经历|学历(?:信息|学位)|education|academic background/i,
@@ -27,11 +27,37 @@
   const compact = value => String(value || '').replace(/[\s_\-：:*＊()（）]/g, '').toLowerCase();
   function section(text) {
     const value = String(text || '').slice(0, 180);
+    if (/语言\s*[/、]\s*证书\s*[/、]\s*技能|语言.*证书.*技能/i.test(value)) return 'qualifications';
     if (/实习\s*[/、和与&-]\s*工作|工作\s*[/、和与&-]\s*实习|(?:work.*internship|internship.*work)/i.test(value)) return 'employment';
     const hits = Object.entries(patterns).filter(([, re]) => re.test(value)).map(([key]) => key);
     // A research-project heading is academic research rather than a second project category.
     if (hits.includes('research') && hits.length === 2 && hits.includes('projects')) return 'research';
     return hits.length === 1 ? hits[0] : 'unknown';
+  }
+  function headingSection(text) {
+    const value = compact(text).replace(/(?:选填|必填|非必填)$/, '');
+    const aliases = {
+      basic: /^(基本信息|基本资料|个人信息|个人资料|联系方式|personalinformation|contactinformation)$/,
+      education: /^(教育经历|教育背景|教育信息|学历信息|学历学位|学习经历|education|academicbackground)$/,
+      work: /^(工作经历|工作经验|任职经历|职业经历|workexperience|employmenthistory)$/,
+      internships: /^(实习经历|实习经验|实习信息|internship|internships)$/,
+      employment: /^(实习[/、和与&]?工作(?:经历|经验)?|工作[/、和与&]?实习(?:经历|经验)?|workandinternship)$/,
+      projects: /^(项目经历|项目经验|项目实践|项目信息|project|projects|projectexperience)$/,
+      awards: /^(获奖|奖项|荣誉|获奖信息|获奖情况|荣誉奖励|荣誉奖项|荣誉奖励信息|奖项信息|奖励信息|奖励情况|awards?|honou?rs?)$/,
+      campus: /^(校园经历|校园活动|校内经历|社团经历|学生工作|社会实践|campus|extracurricular)$/,
+      research: /^(科研经历|科研项目|研究经历|research|researchexperience)$/,
+      publications: /^(论文|论文发表|论文成果|论文信息|论文\/期刊|学术发表|publications?)$/,
+      patents: /^(专利|专利信息|专利成果|发明成果专利|patents?)$/,
+      languageCertificates: /^(语言能力|语言考试|语言水平|外语|语言证书|language)$/,
+      professionalCertificates: /^(资格证书|专业证书|职业证书|证书信息|certificates?|certifications?)$/,
+      qualifications: /^(语言\/证书\/技能|语言证书技能)$/,
+      training: /^(培训经历|培训信息|进修经历|training)$/,
+      volunteer: /^(志愿经历|志愿活动|公益经历|公益活动|volunteer)$/,
+      portfolio: /^(作品集|作品展示|作品信息|portfolio)$/,
+      jobIntention: /^(求职意向|应聘意向|工作意向|jobpreference|careerobjective)$/,
+      other: /^(其他信息|技能|专业技能|自我评价|兴趣爱好|otherinformation)$/
+    };
+    return Object.entries(aliases).find(([, pattern]) => pattern.test(value))?.[0] || 'unknown';
   }
   function inferSection(text) {
     const value = compact(text);
@@ -46,7 +72,7 @@
     if (/论文题目|论文名称|期刊名称|papertitle|publicationtitle/.test(value)) return 'publications';
     if (/专利名称|专利号|patent/.test(value)) return 'patents';
     if (/期望职位|期望薪资|期望城市|意向城市|意向职位/.test(value)) return 'jobIntention';
-    if (/^(姓名|性别|手机号|手机号码|联系电话|邮箱|电子邮箱|出生日期|出生年月|现居城市|籍贯|民族|政治面貌|name|email|phone|mobile|gender|birthday)$/.test(value)) return 'basic';
+    if (/^(?:请输入|请填写|请选择)?(?:姓名|性别|手机号|手机号码|联系电话|邮箱|电子邮箱|出生日期|出生年月|现居城市|所在城市|籍贯|民族|政治面貌|name|email|phone|mobile|gender|birthday)$/.test(value)) return 'basic';
     return 'unknown';
   }
   const anchors = {
@@ -58,6 +84,7 @@
     campus: /活动名称|组织名称|社团名称|activity.?name/i, research: /课题名称|研究名称|科研项目|research.?name/i,
     publications: /论文名称|论文题目|paper.?title/i, patents: /专利名称|patent.?name/i,
     languageCertificates: /语言名称|语种|language.?name/i, professionalCertificates: /证书名称|certificate.?name/i,
+    qualifications: /语言名称|语种|考试名称|证书名称|language.?name|certificate.?name/i,
     training: /培训名称|课程名称|training.?name/i, volunteer: /活动名称|项目名称|volunteer.?name/i,
     portfolio: /作品名称|作品名|portfolio.?name/i
   };
@@ -78,11 +105,22 @@
     professionalCertificates: { name: /^(证书名称)$/, number: /^(证书编号)$/ }
   };
   function fieldKind(text, scope) {
-    const v = compact(text);
+    const v = compact(text).replace(/^(?:请输入|请选择|请填写|填写|选择)/, '');
     if (/预计毕业|预期毕业|expectedgraduation/.test(v)) return 'expectedGraduationDate';
     if (scope === 'basic' && /毕业(?:时间|年月|日期)|graduationdate/.test(v)) return 'expectedGraduationDate';
     const contextual = Object.entries(contextualFields[scope] || {}).find(([, pattern]) => pattern.test(v));
     if (contextual) return contextual[0];
+    const basicKeys = {
+      name: /^(姓名|中文姓名|真实姓名|name|fullname)$/, gender: /^(性别|gender|sex)$/,
+      phone: /^(手机|手机号|手机号码|联系电话|移动电话|phone|mobile|telephone)$/,
+      email: /^(邮箱|电子邮箱|电子邮件|email|emailaddress)$/,
+      nationality: /^(国籍|国家\/地区)$/, nativePlace: /^(籍贯)$/,
+      ethnicity: /^(民族)$/, location: /^(所在城市|现居城市|现居住地|居住城市)$/,
+      birthday: /^(出生日期|出生年月|出生时间|生日|birthday|dateofbirth)$/,
+      wechat: /^(微信|微信号)$/, idCard: /^(身份证号|身份证号码|证件号码)$/, interests: /^(兴趣爱好|爱好)$/
+    };
+    const basic = Object.entries(basicKeys).find(([, pattern]) => pattern.test(v));
+    if (basic) return basic[0];
     if (/结束|毕业(?:时间|年月|日期)|离职|enddate|endtime|graduationdate/.test(v)) return 'endDate';
     if (/开始|入学|入职|起始|startdate|starttime/.test(v)) return 'startDate';
     if (/^(学校|学校名称|毕业院校|就读院校|school|schoolname|university)$/.test(v)) return 'school';
@@ -93,7 +131,7 @@
     if (/^(项目名称|项目名|projectname)$/.test(v)) return 'projectName';
     return null;
   }
-  globalThis.__resumeSemantics = Object.freeze({ titles, section, inferSection, fieldKind,
+  globalThis.__resumeSemantics = Object.freeze({ titles, section, headingSection, inferSection, fieldKind,
     isAnchor: (key, text) => Boolean(anchors[key]?.test(String(text || ''))),
     repeated: Object.freeze(Object.keys(anchors)) });
 })();

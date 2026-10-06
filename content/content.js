@@ -15,13 +15,34 @@
   const sectionAgent = globalThis.__resumeSections;
   let fieldContexts = new Map();
   let includeExisting = false;
-  const INPUT_TYPES = new Set(['text', 'email', 'tel', 'url', 'number', 'date', 'month', 'week', 'time', 'datetime-local']);
+  const INPUT_TYPES = new Set(['text', 'email', 'tel', 'url', 'number', 'date', 'month', 'week', 'time', 'datetime-local', 'radio']);
+
+  function radioInfo(el) {
+    if (el.tagName !== 'INPUT' || el.type !== 'radio') return null;
+    for (let root = el.parentElement, depth = 0; root && root !== document.body && depth < 5; root = root.parentElement, depth++) {
+      const options = [...root.querySelectorAll('input[type="radio"]')].filter(item => !el.name || item.name === el.name);
+      if (options.length < 2) continue;
+      if ([...root.querySelectorAll('input[type="radio"]')].some(item => !options.includes(item))) break;
+      if (root.querySelector('input:not([type="radio"]):not([type="hidden"]),select,textarea')) break;
+      const captions = [root.getAttribute('aria-label') || '', ...[...root.querySelectorAll('legend,label,span,div,p')]
+        .filter(node => !node.querySelector('input,select,textarea')).map(readLabelText)];
+      const label = captions.map(text => text.replace(/[\s*＊：:]/g, '')).find(text => /^(性别|gender|学习形式|是否全日制|是否统招)$/i.test(text));
+      if (!label) continue;
+      const optionLabel = option => {
+        const label = option.closest('label') || (option.id && document.querySelector(`label[for="${CSS.escape(option.id)}"]`));
+        return label ? readLabelText(label) : option.getAttribute('aria-label') || option.value || '';
+      };
+      return { root, options, label, optionLabel };
+    }
+    return null;
+  }
 
   function eligibleElement(el) {
     if (!el || !el.isConnected || el.ownerDocument !== document || el.disabled || !isVisible(el)) return false;
     if (el.closest('[inert], [aria-hidden="true"], button, a[href], [role="button"]')) return false;
     const tag = el.tagName.toLowerCase();
     if (tag === 'input' && !INPUT_TYPES.has((el.type || 'text').toLowerCase())) return false;
+    if (el.type === 'radio' && !radioInfo(el)) return false;
     const inner = el.querySelector('input:not([type="hidden"])');
     if (inner && (!INPUT_TYPES.has((inner.type || 'text').toLowerCase()) || inner.disabled)) return false;
     const description = [el.name || '', el.id || '', getLabelText(el), getPlaceholder(el)].join(' ');
@@ -29,6 +50,7 @@
     return !isSearchLikeField(el);
   }
   function fieldHasValue(el) {
+    if (el.type === 'radio') return Boolean(radioInfo(el)?.options.some(option => option.checked));
     if (typeof el.value === 'string' && el.value.trim()) return true;
     const inner = el.querySelector('input:not([type="hidden"]), textarea');
     if (inner && inner.value.trim()) return true;
@@ -50,8 +72,10 @@
 
     // 2. 原生元素优先
     if (tag === 'select') return 'native-select';
+    if (tag === 'input' && el.type === 'radio') return 'native-radio';
     if (tag === 'textarea') return 'native-input';
     if (tag === 'input') {
+      if (['date', 'month', 'week', 'time', 'datetime-local'].includes(el.type)) return 'native-input';
       // 只读输入框多为自定义下拉/级联/日期组件的展示层：原生 setter 填值不会触发框架更新，
       // 必须走组件交互。先判日期（如 B 站 bili-date），再判下拉。
       if (el.readOnly) {
@@ -115,7 +139,7 @@
     // placeholder 含强日期信号（只用出生/生日/birth/年月，不用裸"日期"/"时间"
     // 避免"更新日期""发布时间"等纯文本输入框误判）
     const ph = (el.placeholder || '').toLowerCase();
-    if (/出生|生日|birth|年\s*月/.test(ph) && ph.length > 0) return true;
+    if (/出生|生日|birth|年\s*月|请选择日期|选择日期/.test(ph) && ph.length > 0) return true;
     // 容器类名含强日期模式（如 month-range-select date_info）
     const anc = el.closest('[class*="datepicker"], [class*="date-picker"], [class*="date_info"], [class*="calendar"], [class*="picker-addon"]');
     if (anc) return true;
@@ -138,7 +162,11 @@
     // 第一轮：原生表单元素
     document.querySelectorAll('input, select, textarea').forEach(el => {
       const type = (el.type || '').toLowerCase();
-      if (['hidden', 'submit', 'button', 'image', 'file', 'password', 'checkbox', 'radio'].includes(type)) return;
+      if (['hidden', 'submit', 'button', 'image', 'file', 'password', 'checkbox'].includes(type)) return;
+      if (type === 'radio') {
+        const info = radioInfo(el);
+        if (!info || info.options.find(option => !option.disabled && isVisible(option)) !== el) return;
+      }
       if (!isVisible(el)) return;
       push(el);
     });
@@ -165,6 +193,7 @@
     // 第三轮：框架绑定的隐藏字段（Vue/React/Angular）
     document.querySelectorAll('[data-field], [formcontrolname], [v-model], [ng-model], [formControlName]').forEach(el => {
       if (!isVisible(el) || seen.has(el)) return;
+      if (el.type === 'radio' && radioInfo(el)?.options.find(option => !option.disabled && isVisible(option)) !== el) return;
       push(el);
     });
 
@@ -194,6 +223,7 @@
     collected.add(el);
 
     const componentType = detectComponentType(el);
+    if (componentType === 'unknown') return;
     const field = {
       id: 'F' + fields.length, componentType,
       tag: el.tagName.toLowerCase(),
@@ -352,6 +382,15 @@
     return clone.textContent.trim();
   }
   function getLabelText(el) {
+    if (el.type === 'radio') return radioInfo(el)?.label || '';
+    const normalize = text => text.replace(/^[\s*＊]+|[：:*＊\s?]+$/g, '').trim();
+    const aria = el.getAttribute('aria-label');
+    if (aria?.trim()) return normalize(aria);
+    const labelled = el.getAttribute('aria-labelledby');
+    if (labelled) {
+      const labels = labelled.split(/\s+/).slice(0, 4).map(id => document.querySelector(`[id="${CSS.escape(id)}"]`)).filter(Boolean);
+      if (labels.length) return normalize(labels.map(readLabelText).join(' '));
+    }
     // label for
     if (el.id) {
       const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
@@ -377,6 +416,20 @@
     }
     // 通用：data-label 属性
     if (el.getAttribute('data-label')) return el.getAttribute('data-label');
+    // CSS modules and grid layouts often have a div/span caption instead of a label element.
+    // Stay within the nearest single-control row; never use a whole resume card as its caption.
+    for (let row = el.parentElement, depth = 0; row && row !== document.body && depth < 5; row = row.parentElement, depth++) {
+      const controls = [...row.querySelectorAll('input,select,textarea,[role="combobox"],[contenteditable]')]
+        .filter(node => !['hidden', 'radio', 'checkbox'].includes(node.type));
+      if (controls.some(node => node !== el && !node.contains(el) && !el.contains(node))) break;
+      const candidates = [...row.querySelectorAll('label,[class*="label"],[class*="Label"],[class*="caption"],[class*="Caption"],span,div,p')];
+      const label = candidates.find(node => node !== el && !node.contains(el) && !el.contains(node)
+        && !node.querySelector('input,select,textarea,button,a[href],[contenteditable]')
+        && !node.closest('[class*="placeholder"],[class*="option"],[role="option"],[class*="selection"],[class*="display-value"],[class*="select-value"]')
+        && normalize(readLabelText(node)).length > 0 && normalize(readLabelText(node)).length <= 50
+        && !(typeof node.className === 'string' && /help|error|tooltip|placeholder|hint|message/i.test(node.className)));
+      if (label) return normalize(readLabelText(label));
+    }
     return '';
   }
 
@@ -471,6 +524,7 @@
         return input && eligibleElement(input) ? fillNativeInput(input, value) : false;
       }
       case 'native-select': return fillNativeSelect(el, value);
+      case 'native-radio': return fillNativeRadio(el, value);
       case 'contenteditable': return fillContentEditable(el, value);
       case 'custom-dropdown': case 'custom-interactive': return fillGenericDropdown(el, value);
       case 'custom-datepicker': return fillGenericDatepicker(el, value, fieldId);
@@ -479,6 +533,33 @@
   }
 
   // ===== 各类型填充实现 =====
+
+  function fillNativeRadio(el, value) {
+    const info = radioInfo(el);
+    if (!info) return false;
+    const normalize = value => String(value).replace(/\s+/g, '').toLowerCase();
+    const canonical = value => {
+      const text = normalize(value);
+      if (/^(男|男性|男生|male|man|m)$/.test(text)) return 'male';
+      if (/^(女|女性|女生|female|woman|f)$/.test(text)) return 'female';
+      if (/^是否(全日制|统招)$/.test(info.label)) {
+        if (/^(是|yes|true|全日制|统招)$/.test(text)) return 'yes';
+        if (/^(否|no|false|非全日制|非统招)$/.test(text)) return 'no';
+      }
+      return text;
+    };
+    const option = info.options.find(option => !option.disabled && isVisible(option)
+      && (canonical(info.optionLabel(option)) === canonical(value) || normalize(option.value) === normalize(value)));
+    if (!option) return false;
+    option.click();
+    if (!option.checked) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked')?.set;
+      if (setter) setter.call(option, true); else { info.options.forEach(item => { item.checked = item === option; }); }
+      option.dispatchEvent(new Event('input', { bubbles: true }));
+      option.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    return Boolean(option.checked);
+  }
 
   function fillNativeInput(el, value) {
     let v = String(value);
@@ -1098,7 +1179,10 @@
       const el = findElement(fieldId, current);
       if (!el) return { fieldId, unavailable: true };
       let value = '';
-      if (el.tagName === 'SELECT') value = el.selectedIndex >= 0 ? el.options[el.selectedIndex]?.textContent || '' : '';
+      if (el.type === 'radio') {
+        const info = radioInfo(el), selected = info?.options.find(option => option.checked);
+        value = selected ? info.optionLabel(selected) : '';
+      } else if (el.tagName === 'SELECT') value = el.selectedIndex >= 0 ? el.options[el.selectedIndex]?.textContent || '' : '';
       else if (typeof el.value === 'string') value = el.value;
       else {
         const input = el.querySelector('input:not([type="hidden"]),textarea');
@@ -1174,7 +1258,7 @@
     if (message.type === 'ENSURE_RECORDS') {
       if (running || !message.targets || typeof message.targets !== 'object' || Array.isArray(message.targets)
         || Object.entries(message.targets).some(([key, value]) => !globalThis.__resumeSemantics.repeated.includes(key)
-          || !Number.isInteger(value) || value < 0 || value > (key === 'employment' ? 40 : 20))) {
+          || !Number.isInteger(value) || value < 0 || value > (['employment', 'qualifications'].includes(key) ? 40 : 20))) {
         sendResponse({ error: '添加条目请求无效' }); return false;
       }
       running = true;
