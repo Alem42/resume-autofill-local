@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 const source = readFileSync(new URL('../content/content.js', import.meta.url), 'utf8');
 const semantics = readFileSync(new URL('../shared/semantics-core.js', import.meta.url), 'utf8');
 const sections = readFileSync(new URL('../content/sections.js', import.meta.url), 'utf8');
+const controls = readFileSync(new URL('../content/controls.js', import.meta.url), 'utf8');
 const extensionId = 'testextensionid';
 const worker = { id: extensionId, url: `chrome-extension://${extensionId}/background/background.js` };
 function fixture(fields = []) {
@@ -61,7 +62,7 @@ function fixture(fields = []) {
   };
   const context = vm.createContext({ document: doc, location: { href: 'https://jobs.example/apply' },
     window: { getComputedStyle: el => ({ display: el.hidden ? 'none' : 'block', visibility: 'visible', opacity: '1' }) },
-    CSS: { escape: value => value }, Event: class { constructor(type) { this.type = type; } }, KeyboardEvent: class { constructor(type) { this.type = type; } },
+    CSS: { escape: value => value }, Event: class { constructor(type) { this.type = type; } }, KeyboardEvent: class { constructor(type) { this.type = type; } }, MouseEvent: class { constructor(type) { this.type = type; } },
     HTMLInputElement: Input, HTMLTextAreaElement: Textarea,
     MutationObserver: class { constructor(callback) { observerCount++; this.callback = callback; } observe() {} disconnect() {} },
     setTimeout(fn, ms) { const id = ++timerId; if (ms < 500) queueMicrotask(fn); else timers.set(id, fn); return id; },
@@ -72,6 +73,7 @@ function fixture(fields = []) {
   });
   vm.runInContext(semantics, context);
   vm.runInContext(sections, context);
+  vm.runInContext(controls, context);
   vm.runInContext(source, context);
   async function send(message, sender = worker) {
     return new Promise((resolve, reject) => {
@@ -133,9 +135,9 @@ test('填写按扫描元素引用执行；原生事件兼容受控输入，结�
   await f.start(); await f.prepare();
   const result = await f.apply([{ fieldId: 'F0', value: 'LOCAL_NAME', componentType: 'native-input' }]);
   assert.equal(f.inputs[0].value, 'LOCAL_NAME');
-  assert.deepEqual(result, { filled: 1, skipped: 0, outcomes: [{ fieldId: 'F0', status: 'filled' }] });
+  assert.deepEqual(result, { filled: 1, skipped: 0, outcomes: [{ fieldId: 'F0', status: 'filled', dropdownDetected: false }] });
   assert.ok(f.domEvents.some(event => event.type === 'input'));
-  assert.equal(f.domEvents.some(event => event.type === 'click'), false);
+  assert.ok(f.domEvents.filter(event => event.type === 'click').every(event => event.target === f.inputs[0]));
   assert.equal(f.domEvents.some(event => event.target === f.doc), false);
 });
 test('预览后字段变成密码框、失联、隐藏、标签变化或出现已有值时跳过', async () => {

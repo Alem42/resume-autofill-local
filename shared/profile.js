@@ -279,7 +279,8 @@ export function localMatchPairs(fields, sources) {
 export function fieldDiagnostic(field) {
   return { id: field.id, section: field.section, recordIndex: field.recordIndex,
     componentType: field.componentType, hasValue: field.hasValue,
-    kind: semantics.fieldKind(field.label || field.name || field.placeholder, field.section) };
+    kind: semantics.fieldKind(field.label || field.name || field.placeholder, field.section),
+    ...(['month', 'day', 'unknown'].includes(field.datePrecision) ? { datePrecision: field.datePrecision } : {}) };
 }
 export function sourceDiagnostic(source) {
   return { id: source.id, section: source.section, recordIndex: source.slotIndex ?? source.recordIndex,
@@ -321,7 +322,8 @@ export function normalizeFields(fields) {
     const section = Object.hasOwn(semantics.titles, field.section) ? field.section : semantics.inferSection(text('label', 80) || text('name', 80));
     const recordIndex = Number.isInteger(field.recordIndex) && field.recordIndex >= 0 && field.recordIndex < MAX_ENTRIES * 2 ? field.recordIndex : null;
     return { id: field.id, label: text('label', 80), placeholder: text('placeholder', 100), name: text('name', 80), componentType: field.componentType,
-      section, sectionLabel: text('sectionLabel', 100), recordIndex, hasValue: field.hasValue === true };
+      section, sectionLabel: text('sectionLabel', 100), recordIndex, hasValue: field.hasValue === true,
+      ...(['month', 'day', 'unknown'].includes(field.datePrecision) ? { datePrecision: field.datePrecision } : {}) };
   });
 }
 
@@ -347,7 +349,9 @@ export function validateMatches(reply, fields, sources, { manualUnknown = false,
     return { fieldId: field.id, sourceId: source.id, fieldLabel: field.label || field.placeholder || field.name || field.id,
       section: field.section, recordIndex: field.recordIndex, hasValue: field.hasValue,
       ...(conflict ? { needsReview: true, warning: diagnosticReason({ reason: conflict, field: fieldDiagnostic(field), source: sourceDiagnostic(source) }), conflict } : {}),
-      sourceLabel: source.label, value: source.value, componentType: field.componentType };
+      sourceLabel: source.label, value: field.datePrecision === 'month' && /^\d{4}[-/.]\d{1,2}/.test(source.value)
+        ? source.value.replace(/^(\d{4})[-/.](\d{1,2}).*$/, (_, year, month) => `${year}-${month.padStart(2, '0')}`) : source.value,
+      componentType: field.componentType };
   });
 }
 

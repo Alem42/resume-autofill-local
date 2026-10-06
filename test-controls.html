@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>候选栏与日期控件测试</title>
+<style>
+body{max-width:1000px;margin:30px auto;padding:0 20px;font:16px/1.6 "Microsoft YaHei",sans-serif;color:#19304e}section{border:1px solid #d8dfeb;padding:20px;margin:20px 0;border-radius:8px}.record{display:grid;grid-template-columns:1fr 1fr;gap:20px;border-top:1px solid #ddd;padding:20px 0}.field{position:relative}input,textarea,.scalar-select{box-sizing:border-box;width:100%;border:1px solid #ccd5e2;border-radius:4px;padding:10px;font:inherit;background:white}textarea{min-height:100px}button{padding:8px 15px;cursor:pointer}.full{grid-column:1/-1}.bili-select-dropdown,.scalar-dropdown,.resume-calendar-panel{position:absolute;top:100%;left:0;min-width:100%;z-index:10;background:white;box-shadow:0 3px 14px #aab4c9;border-radius:5px;max-height:300px;overflow:auto}.bili-select-dropdown-item{padding:8px 12px;cursor:pointer}.bili-select-dropdown-item:hover{background:#e8efff}.calendar-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:8px}.calendar-grid span{padding:5px;cursor:pointer;text-align:center}.calendar-grid span:hover{background:#e8efff}.notice{padding:14px;background:#edf3ff}input:invalid{border-color:#ce5a5a}
+</style></head><body>
+<h1>候选栏与日期控件测试</h1>
+<p class="notice">仅用于虚构资料，不连接招聘网站。导入 examples/profile.example.json，在扩展中手动检测并确认填写。这里学校是 type=search，专业输入后才出现候选，学历没有内部输入框；日期只能点选。可切换月 / 日精度后重新检测。</p>
+<p><button id="month-mode" type="button">日期要求到月</button> <button id="day-mode" type="button">日期要求到日</button> <span id="mode">当前：YYYY-MM</span></p>
+<section><h2>基本信息</h2><div class="record"><label>姓名<input></label><label>电子邮箱<input type="email"></label></div></section>
+<section><h2>教育背景</h2><div id="education-list"></div><button id="add-education" type="button">添加教育经历</button></section>
+<section><h2>项目经历</h2><div id="projects-list"></div><button id="add-project" type="button">添加项目经历</button></section>
+<script>
+let serial=0,precision='month';
+const schoolOptions=['演示研究生大学（虚构）(Demo Graduate University)','演示本科大学（虚构）(Demo Undergraduate University)'];
+function field(caption){const row=document.createElement('div');row.className='field';const title=document.createElement('div');title.textContent=caption;row.append(title);return row;}
+function candidateField(caption,options,{search=false,signal=false}={}){
+ const row=field(caption),input=document.createElement('input');input.type=search?'search':'text';input.placeholder='请输入'+caption;
+ if(signal)row.classList.add('bili-select');const menu=document.createElement('div');menu.className=search?'bili-select-dropdown':'scalar-dropdown';menu.hidden=true;
+ let accepted=false,timer;
+ input.addEventListener('input',()=>{accepted=false;input.setCustomValidity('请点击候选');clearTimeout(timer);timer=setTimeout(()=>{
+   menu.replaceChildren();const query=input.value.trim().replace(/[（(][^）)]*[）)]/g,'');
+   for(const name of options.filter(name=>name.includes(query))){const choice=document.createElement('div');choice.className='bili-select-dropdown-item';choice.textContent=name;
+     choice.addEventListener('mousedown',event=>event.preventDefault());choice.addEventListener('click',()=>{input.value=name;accepted=true;input.setCustomValidity('');menu.hidden=true;});menu.append(choice);}
+   menu.hidden=!menu.children.length;
+ },220);});
+ input.addEventListener('blur',()=>{if(!accepted)input.setCustomValidity('搜索文字尚未点选');});input.addEventListener('keydown',event=>{if(event.key==='Escape')menu.hidden=true;});
+ row.append(input,menu);return row;
+}
+function degreeField(){
+ const row=field('学历'),select=document.createElement('div'),display=document.createElement('span'),menu=document.createElement('div');
+ select.className='scalar-select';select.setAttribute('role','combobox');select.setAttribute('aria-label','学历');menu.id='degree-menu-'+(++serial);select.setAttribute('aria-controls',menu.id);
+ display.className='placeholder';display.textContent='请选择学历';select.append(display);menu.className='bili-select-dropdown';menu.hidden=true;
+ select.addEventListener('click',()=>{menu.hidden=false;select.setAttribute('aria-expanded','true');});
+ for(const value of ['高中','大专','本科','硕士研究生','博士研究生']){const choice=document.createElement('div');choice.className='bili-select-dropdown-item';choice.textContent=value;
+   choice.addEventListener('click',()=>{display.className='selected-value';display.textContent=value;select.setAttribute('aria-valuetext',value);select.setAttribute('aria-expanded','false');menu.hidden=true;});menu.append(choice);}
+ row.append(select,menu);return row;
+}
+function dateField(caption){
+ const row=field(caption),input=document.createElement('input'),panel=document.createElement('div');input.readOnly=true;input.placeholder='请选择'+caption;input.dataset.format=precision==='month'?'YYYY-MM':'YYYY-MM-DD';
+ panel.className='resume-calendar-panel';panel.hidden=true;let year=2026,month=1;
+ const years=document.createElement('div'),months=document.createElement('div'),days=document.createElement('div');for(const grid of [years,months,days])grid.className='calendar-grid';
+ function renderDays(){days.replaceChildren();if(precision==='month')return;for(let day=1;day<=new Date(year,month,0).getDate();day++){
+   const cell=document.createElement('span');cell.setAttribute('role','gridcell');const iso=year+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0');cell.dataset.date=iso;cell.textContent=day;
+   cell.addEventListener('click',()=>{input.value=iso;panel.hidden=true;input.dispatchEvent(new Event('change',{bubbles:true}));});days.append(cell);}}
+ for(let value=2020;value<=2028;value++){const cell=document.createElement('span');cell.textContent=value+'年';cell.addEventListener('click',()=>{year=value;renderDays();});years.append(cell);}
+ for(let value=1;value<=12;value++){const cell=document.createElement('span');cell.textContent=value+'月';cell.addEventListener('click',()=>{month=value;if(precision==='month'){input.value=year+'-'+String(month).padStart(2,'0');panel.hidden=true;}else renderDays();});months.append(cell);}
+ panel.append(years,months,days);renderDays();input.addEventListener('click',()=>{panel.hidden=false;});input.addEventListener('keydown',event=>{if(event.key==='Escape')panel.hidden=true;});row.append(input,panel);return row;
+}
+function addEducation(){const record=document.createElement('div');record.className='record';record.append(dateField('开始日期'),dateField('结束日期'),candidateField('学校',schoolOptions,{search:true,signal:true}),degreeField(),candidateField('专业名称',['计算机科学(工学)','软件工程(工学)']));document.getElementById('education-list').append(record);}
+function addProject(){const record=document.createElement('div');record.className='record';const name=field('项目名称'),input=document.createElement('input');name.append(input);const description=field('项目描述'),textarea=document.createElement('textarea');description.classList.add('full');description.append(textarea);record.append(name,dateField('开始日期'),dateField('结束日期'),description);document.getElementById('projects-list').append(record);}
+document.getElementById('add-education').addEventListener('click',addEducation);document.getElementById('add-project').addEventListener('click',addProject);
+for(const [id,value] of [['month-mode','month'],['day-mode','day']])document.getElementById(id).addEventListener('click',()=>{precision=value;document.getElementById('mode').textContent='当前：'+(value==='month'?'YYYY-MM':'YYYY-MM-DD');document.getElementById('education-list').replaceChildren();document.getElementById('projects-list').replaceChildren();addEducation();addProject();});
+addEducation();addProject();
+</script></body></html>

@@ -166,10 +166,11 @@ export function createController(api, fetchApi = globalThis.fetch) {
     const seen = new Set();
     for (const item of data) {
       if (!item || !ids.includes(item.fieldId) || seen.has(item.fieldId)
-        || Object.keys(item).some(key => !['fieldId', 'value', 'unavailable', 'truncated'].includes(key))
+        || Object.keys(item).some(key => !['fieldId', 'value', 'unavailable', 'truncated', 'datePrecision'].includes(key))
         || (item.value !== undefined && (typeof item.value !== 'string' || item.value.length > 20000))
         || (item.unavailable !== undefined && typeof item.unavailable !== 'boolean')
-        || (item.truncated !== undefined && typeof item.truncated !== 'boolean')) throw new Error('网页返回未授权的校对字段');
+        || (item.truncated !== undefined && typeof item.truncated !== 'boolean')
+        || (item.datePrecision !== undefined && !['month', 'day', 'unknown'].includes(item.datePrecision))) throw new Error('网页返回未授权的校对字段');
       seen.add(item.fieldId);
     }
     return new Map(data.map(item => [item.fieldId, item]));
@@ -183,7 +184,8 @@ export function createController(api, fetchApi = globalThis.fetch) {
       const fields = batch.map(mapping => {
         const field = flow.fields.find(field => field.id === mapping.fieldId);
         const observed = values.get(mapping.fieldId);
-        return { ...field, sourceId: mapping.sourceId, proposedValue: mapping.value,
+        return { ...field, ...(observed?.datePrecision ? { datePrecision: observed.datePrecision } : {}), sourceId: mapping.sourceId,
+          proposedValue: observed?.datePrecision === 'month' && /^\d{4}-\d{2}/.test(mapping.value) ? mapping.value.slice(0, 7) : mapping.value,
           ...(phase === 'after' ? { observedValue: observed?.value ?? '' } : { existingValue: observed?.value ?? '' }),
           unavailable: !observed || observed.unavailable === true, truncated: observed?.truncated === true };
       });
@@ -278,7 +280,7 @@ export function createController(api, fetchApi = globalThis.fetch) {
         try {
           await cancel(tab.id);
           const injected = await api.scripting.executeScript({ target: { tabId: tab.id, frameIds: [0] },
-            files: ['shared/semantics-core.js', 'content/sections.js', 'content/content.js'] });
+            files: ['shared/semantics-core.js', 'content/sections.js', 'content/controls.js', 'content/content.js'] });
           const documentId = injected.find(result => result.frameId === 0)?.documentId;
           if (!documentId) throw new Error('无法定位当前页面，请升级浏览器');
           const current = await api.tabs.get(tab.id);
@@ -390,6 +392,8 @@ export function createController(api, fetchApi = globalThis.fetch) {
           flow.diagnostic.stage = 'collecting';
           const collected = await send(flow, { type: 'PREPARE_FIELDS', overwrite: flow.overwrite, includeExisting: flow.aiAssist });
           if (collected?.error) throw new Error(collected.error);
+          flow.diagnostic.contentVersion = typeof collected?.contentVersion === 'string' && /^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(collected.contentVersion)
+            ? collected.contentVersion : 'unknown';
           const fields = normalizeFields(collected?.fields);
           if (!fields.length) throw new Error('没有可填写的空字段；请先手动展开经历区块，或检查覆盖选项');
           await isCurrent(flow, 'matching');
@@ -529,7 +533,10 @@ export function createController(api, fetchApi = globalThis.fetch) {
             const ids = new Set(flow.fields.map(field => field.id));
             flow.diagnostic.outcomes = (result.outcomes || []).filter(item => ids.has(item.fieldId))
               .map(item => ({ fieldId: item.fieldId, status: item.status === 'filled' ? 'filled' : 'skipped',
-                ...(['existing_value', 'field_changed', 'selection_not_committed', 'component_refused', 'range_requires_both'].includes(item.reason) ? { reason: item.reason } : {}) }));
+                ...(['existing_value', 'field_changed', 'selection_not_committed', 'component_refused', 'range_requires_both'].includes(item.reason) ? { reason: item.reason } : {}),
+                ...(typeof item.dropdownDetected === 'boolean' ? { dropdownDetected: item.dropdownDetected } : {}),
+                ...(['exact', 'alias', 'similar'].includes(item.optionMatch) ? { optionMatch: item.optionMatch } : {}),
+                ...(['month', 'day'].includes(item.datePrecision) ? { datePrecision: item.datePrecision } : {}) }));
             await api.storage.session.set({ lastDiagnostic: flow.diagnostic });
           }
           delete flow.mappings;

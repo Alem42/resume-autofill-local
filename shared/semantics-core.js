@@ -64,7 +64,7 @@
     if (value === '最高学历') return 'basic';
     if (/^(专业技能|技能|自我评价|自我介绍|兴趣爱好|补充信息|skills|selfevaluation)$/.test(value)) return 'other';
     if (/预计毕业|预期毕业|expectedgraduation/.test(value)) return 'basic';
-    if (/学校名称|毕业院校|就读院校|schoolname|education|学历|学位|所学专业/.test(value)) return 'education';
+    if (/^(学校|院校|university|school)$/.test(value) || /学校名称|毕业院校|就读院校|schoolname|education|学历|学位|所学专业/.test(value)) return 'education';
     if (/实习单位|实习公司|internship/.test(value)) return 'internships';
     if (/公司名称|工作单位|雇主|工作描述|companyname|employer|workdescription/.test(value)) return 'work';
     if (/项目名称|项目描述|项目角色|projectname|projectdescription|projectrole/.test(value)) return 'projects';

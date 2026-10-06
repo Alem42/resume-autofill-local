@@ -86,7 +86,7 @@ export function domFixture() {
     chrome: { runtime: { id: 'testextensionid', getURL: path => `chrome-extension://testextensionid/${path}`,
       onMessage: { addListener(fn) { listener = fn; } }, async sendMessage(message) { messages.push(message); } },
       get storage() { throw new Error('No content-script storage access'); } } });
-  for (const path of ['shared/semantics-core.js', 'content/sections.js', 'content/content.js']) {
+  for (const path of ['shared/semantics-core.js', 'content/sections.js', 'content/controls.js', 'content/content.js']) {
     vm.runInContext(readFileSync(new URL('../' + path, import.meta.url), 'utf8'), context);
   }
   const send = message => new Promise((resolve, reject) => {

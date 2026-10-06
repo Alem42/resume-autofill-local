@@ -451,3 +451,26 @@ test('完成后的诊断记录对应关系和实际执行状态，不保存字�
   assert.deepEqual(diagnostic.mappings, [{ fieldId: 'F0', sourceId: 'S0', matchedBy: 'local' }]);
   assert.equal(/PRIVATE_|姓名/.test(JSON.stringify(diagnostic)), false);
 });
+
+test('填写后发现网页只接受月份，AI校对使用相同的年月精度且诊断不含日期值', async () => {
+  const profile = normalizeProfile({ education: [{ startDate: '2024-09-13' }] });
+  const f = fixture({ profile, pageHandler: message => {
+    if (message.type === 'PREPARE_FIELDS') return { fields: [{ id: 'F0', label: '开始时间', componentType: 'custom-datepicker', section: 'education', recordIndex: 0 }] };
+    if (message.type === 'READ_VALUES') return { values: [{ fieldId: 'F0', value: '' }] };
+    if (message.type === 'APPLY_FIELDS') return { filled: 1, skipped: 0, outcomes: [{ fieldId: 'F0', status: 'filled', datePrecision: 'month' }], readback: [{ fieldId: 'F0', value: '2024-09', datePrecision: 'month' }] };
+    return { ok: true };
+  }, fetcher: async (url, init) => {
+    const body = JSON.parse(init.body), request = JSON.parse(body.messages[1].content);
+    return request.phase ? modelResponse({ reviews: [{ fieldId: 'F0', status: 'ok', reason: '演示校对' }] }) : modelResponse({ mappings: [{ fieldId: 'F0', sourceId: 'S0' }] });
+  } });
+  const flow = await f.detect();
+  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false, aiAssist: true }, flow.sender);
+  await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0'] }, flow.sender);
+  const request = JSON.parse(JSON.parse(f.requests.at(-1).init.body).messages[1].content);
+  assert.equal(request.fields[0].datePrecision, 'month');
+  assert.equal(request.fields[0].proposedValue, '2024-09');
+  assert.equal(request.fields[0].observedValue, '2024-09');
+  const diagnostic = (await f.controller.handle({ type: 'GET_DIAGNOSTICS' }, options)).diagnostic;
+  assert.equal(diagnostic.outcomes[0].datePrecision, 'month');
+  assert.equal(JSON.stringify(diagnostic).includes('2024-09'), false);
+});

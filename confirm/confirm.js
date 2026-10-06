@@ -156,6 +156,11 @@ function finish(result) {
     reviews.append(element('p', 'review-note warning', `${mapping?.fieldLabel || item.fieldId}：${skipReasons[item.reason] || '未完成填写，请检查网页'}`));
     document.getElementById('after-review').hidden = false;
   }
+  for (const item of result.outcomes || []) if (item.status === 'filled' && ['alias', 'similar'].includes(item.optionMatch)) {
+    const mapping = currentData.mappings?.find(mapping => mapping.fieldId === item.fieldId);
+    reviews.append(element('p', 'review-note warning', `${mapping?.fieldLabel || item.fieldId}：已选择${item.optionMatch === 'alias' ? '名称变体' : '近似'}候选，请核对网页实际选项。`));
+    document.getElementById('after-review').hidden = false;
+  }
   status(`已填写 ${result.filled} 个字段，跳过 ${result.skipped} 个。请回到网页检查并自行提交。`);
 }
 onClick('select-all', () => { document.querySelectorAll('#sources input').forEach(input => { input.checked = true; }); summary(); });

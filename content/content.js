@@ -12,10 +12,14 @@
   let debounceTimer = null;
   const fieldRegistry = new Map();
   const MAX_FIELDS = 400;
+  const CONTENT_VERSION = '2.4.0';
   const sectionAgent = globalThis.__resumeSections;
+  const controlRules = globalThis.__resumeControls;
+  const componentControls = controlRules.create({ visible: isVisible, sleep, label: getLabelText, write: writeSearchValue,
+    close: closeOpenPanel, check() { if (!activeScanToken) throw new Error('填写已停止'); } });
   let fieldContexts = new Map();
   let includeExisting = false;
-  const INPUT_TYPES = new Set(['text', 'email', 'tel', 'url', 'number', 'date', 'month', 'week', 'time', 'datetime-local', 'radio']);
+  const INPUT_TYPES = new Set(['text', 'search', 'email', 'tel', 'url', 'number', 'date', 'month', 'week', 'time', 'datetime-local', 'radio']);
 
   function radioInfo(el) {
     if (el.tagName !== 'INPUT' || el.type !== 'radio') return null;
@@ -94,11 +98,9 @@
       return 'native-input';
     }
 
-    // 3. 通用下拉框检测（不依赖框架名）
-    if (hasDropdownBehavior(el)) return 'custom-dropdown';
-
-    // 4. 日期选择器检测
+    // Date semantics win over a component class containing "select" or "picker".
     if (hasDatepickerBehavior(el)) return 'custom-datepicker';
+    if (hasDropdownBehavior(el)) return 'custom-dropdown';
 
     // 5. 内含 input 的容器（通用自定义输入框）
     const innerInput = el.querySelector('input:not([type="hidden"]):not([type="submit"]):not([type="button"])');
@@ -119,7 +121,7 @@
     const cls = (typeof el.className === 'string') ? el.className : '';
     if (el.tagName.toLowerCase() !== 'select' && /select|dropdown|combo|picker|cascader/i.test(cls)) return true;
     // 自身不匹配时检查最近祖先容器（如 Moka input 在 sd-Select-container 内，自身类名不含 select）
-    const anc = el.closest('[class*="select"], [class*="picker"], [class*="dropdown"], [class*="cascader"], [role="combobox"]');
+    const anc = el.closest('[class*="select"], [class*="Select"], [class*="picker"], [class*="dropdown"], [class*="cascader"], [class*="autocomplete"], [class*="AutoComplete"], [role="combobox"]');
     if (anc) return true;
     // placeholder 信号："请选择" 强烈暗示为下拉
     if ((el.placeholder || '').includes('请选择')) return true;
@@ -141,7 +143,10 @@
     // placeholder 含强日期信号（只用出生/生日/birth/年月，不用裸"日期"/"时间"
     // 避免"更新日期""发布时间"等纯文本输入框误判）
     const ph = (el.placeholder || '').toLowerCase();
-    if (/出生|生日|birth|年\s*月|请选择日期|选择日期/.test(ph) && ph.length > 0) return true;
+    if (/出生|生日|birth|年\s*月|(?:请选择|选择)(?:开始|结束|起始|截止)?(?:日期|时间)/.test(ph) && ph.length > 0) return true;
+    const labelNode = el.closest('[class*="form-item"],[class*="field-item"],[class*="form-group"]')?.querySelector('label,[class*="label"],[class*="Label"]');
+    const kind = globalThis.__resumeSemantics.fieldKind(el.getAttribute('aria-label') || el.getAttribute('data-label') || el.name || ph || (labelNode ? readLabelText(labelNode) : ''));
+    if (['startDate', 'endDate', 'birthday', 'expectedGraduationDate'].includes(kind) && hasDropdownBehavior(el)) return true;
     // 容器类名含强日期模式（如 month-range-select date_info）
     const anc = el.closest('[class*="datepicker"], [class*="date-picker"], [class*="date_info"], [class*="calendar"], [class*="picker-addon"]');
     if (anc) return true;
@@ -234,6 +239,7 @@
       name: el.name || el.getAttribute('name') || el.getAttribute('formcontrolname') || '',
       contextText: getContextText(el),
       required: isRequired(el), hasValue: fieldHasValue(el),
+      ...(componentType === 'custom-datepicker' || ['date', 'month'].includes(el.type) ? { datePrecision: controlRules.datePrecision(el) } : {}),
       ...fieldContexts.get(el)
     };
 
@@ -324,6 +330,8 @@
   // 搜索框类字段（最大的误判源：搜索页）
   function isSearchLikeField(el) {
     if (globalThis.__resumeSemantics.fieldKind(getLabelText(el), 'education') === 'school') return false;
+    if (componentControls.choiceSignals(el) && getLabelText(el)
+      && globalThis.__resumeSemantics.inferSection(getLabelText(el)) !== 'unknown') return false;
     if (el.type === 'search') return true;
     if (el.getAttribute('role') === 'searchbox') return true;
     const text = ((el.name || '') + ' ' + getLabelText(el) + ' ' + getPlaceholder(el)).toLowerCase();
@@ -553,10 +561,16 @@
         if (pair.every(Boolean) && pair.every(item => item.componentType === 'custom-datepicker')
           && range.inputs.every(input => eligibleElement(input) && (allowOverwrite || !fieldHasValue(input)))) {
           pair.forEach(item => handled.add(item.fieldId));
-          let success = false;
-          try { success = await fillDateRangePair(range.inputs, pair.map(item => String(item.value))); } catch {}
-          for (const item of pair) outcomes.push({ fieldId: item.fieldId, status: success ? 'filled' : 'skipped',
-            ...(success ? {} : { reason: 'selection_not_committed' }) });
+          let response = { filled: false, precisions: [] };
+          try { response = await fillDateRangePair(range.inputs, pair.map(item => String(item.value))); } catch {}
+          const success = response.filled;
+          pair.forEach((item, index) => {
+            const precision = response.precisions[index];
+            if (['month', 'day'].includes(precision)) fieldRegistry.get(item.fieldId).datePrecision = precision;
+            outcomes.push({ fieldId: item.fieldId, status: success ? 'filled' : 'skipped',
+              ...(success ? {} : { reason: 'selection_not_committed' }),
+              ...(['month', 'day'].includes(precision) ? { datePrecision: precision } : {}) });
+          });
           if (success) { count += 2; range.inputs.forEach(highlightField); }
         } else {
           handled.add(mapping.fieldId);
@@ -566,10 +580,16 @@
       }
 
       try {
-        const filled = await fillByType(el, value, componentType, mapping.fieldId);
+        const response = await fillByType(el, value, componentType, mapping.fieldId);
+        const detail = typeof response === 'object' && response ? response : { filled: Boolean(response) };
+        const filled = detail.filled;
         if (filled) { highlightField(el); count++; }
         outcomes.push({ fieldId: mapping.fieldId, status: filled ? 'filled' : 'skipped',
-          ...(filled ? {} : { reason: 'selection_not_committed' }) });
+          ...(filled ? {} : { reason: 'selection_not_committed' }),
+          ...(typeof detail.dropdown === 'boolean' ? { dropdownDetected: detail.dropdown } : {}),
+          ...(['exact', 'alias', 'similar'].includes(detail.match) ? { optionMatch: detail.match } : {}),
+          ...(['day', 'month'].includes(detail.precision) ? { datePrecision: detail.precision } : {}) });
+        if (['day', 'month'].includes(detail.precision)) fieldRegistry.get(mapping.fieldId).datePrecision = detail.precision;
       } catch {
         // A component that refuses a synthetic event is counted as skipped.
         outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: 'component_refused' });
@@ -587,12 +607,18 @@
     switch (componentType) {
       case 'native-input': case 'wrapper-input': {
         const input = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ? el : el.querySelector('input:not([type="hidden"]), textarea');
-        return input && eligibleElement(input) ? fillNativeInput(input, value) : false;
+        if (!input || !eligibleElement(input)) return false;
+        // Short scalar fields may search a dropdown even when their markup resembles an ordinary input.
+        const narrative = /描述|职责|贡献|成果|自我评价|介绍|说明|description|responsibilit|achievement/i.test(getLabelText(input));
+        if (input.tagName === 'INPUT' && ['text', 'search', 'email', 'tel', 'url', 'number'].includes(input.type) && value.length <= 500 && !narrative) {
+          return componentControls.fillChoice(input, value, { plain: true });
+        }
+        return fillNativeInput(input, value);
       }
       case 'native-select': return fillNativeSelect(el, value);
       case 'native-radio': return fillNativeRadio(el, value);
       case 'contenteditable': return fillContentEditable(el, value);
-      case 'school-autocomplete': return fillSchoolAutocomplete(el, value);
+      case 'school-autocomplete': return componentControls.fillChoice(el, value);
       case 'custom-dropdown': case 'custom-interactive': return fillGenericDropdown(el, value);
       case 'custom-datepicker': return fillGenericDatepicker(el, value, fieldId);
       default: return false;
@@ -642,6 +668,12 @@
     el.dispatchEvent(new Event('change', { bubbles: true }));
     el.dispatchEvent(new Event('blur', { bubbles: true }));
     return el.value === v;
+  }
+  function writeSearchValue(input, value) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (setter) setter.call(input, value); else input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
   function fillNativeSelect(el, value) {
@@ -726,60 +758,6 @@
 
   // Candidates are restricted to visible nearby dropdown panels.
   const DROPDOWN_PANELS = '[role="listbox"], [role="tree"], .ant-select-dropdown, .ant-cascader-menus, .el-select-dropdown, [class*="Select-menu"], [class*="select-menu"], [class*="dropdown-menu"], [class*="cascader-menu"]';
-  const SCHOOL_PANELS = DROPDOWN_PANELS + ', [class*="autocomplete-suggestion"], [class*="auto-complete-dropdown"], [class*="AutoComplete-menu"]';
-  const sameSchool = (a, b) => String(a || '').normalize('NFKC').replace(/\s+/g, '').toLowerCase()
-    === String(b || '').normalize('NFKC').replace(/\s+/g, '').toLowerCase();
-  async function fillSchoolAutocomplete(el, value) {
-    const token = activeScanToken;
-    const input = el.tagName === 'INPUT' ? el : el.querySelector('input:not([type="hidden"])');
-    if (!input || input.disabled) return false;
-    const beforePanels = new Set([...document.querySelectorAll(SCHOOL_PANELS)].filter(isVisible));
-    input.focus();
-    input.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    input.click();
-    if (!input.readOnly) {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-      if (setter) setter.call(input, value); else input.value = value;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-    // Searching is asynchronous. A textbox containing the school name is not a committed selection.
-    for (let attempt = 0; attempt < 25; attempt++) {
-      await sleep(120);
-      if (!activeScanToken || activeScanToken !== token) throw new Error('填写已停止');
-      const linkedIds = [input, el].flatMap(node => [node.getAttribute('aria-controls'), node.getAttribute('aria-owns')])
-        .filter(Boolean).flatMap(value => value.split(/\s+/));
-      const r = input.getBoundingClientRect();
-      const panels = [...document.querySelectorAll(SCHOOL_PANELS)].filter(panel => {
-        if (!isVisible(panel) || panel.contains(input)) return false;
-        if (linkedIds.length) return linkedIds.includes(panel.id) || linkedIds.some(id => panel.querySelector(`[id="${CSS.escape(id)}"]`));
-        if (beforePanels.has(panel)) return false;
-        const pr = panel.getBoundingClientRect();
-        return Math.abs(pr.left - r.left) < 400 && Math.abs(pr.top - r.bottom) < 600;
-      });
-      const candidates = [...new Set(panels.flatMap(panel => [...panel.querySelectorAll('[role="option"],li,[class*="option"],[class*="suggestion"],span,div')]))]
-        .filter(option => safeOption(option) && isVisible(option) && option.getAttribute('aria-disabled') !== 'true'
-          && !/disabled/i.test(option.className) && sameSchool(option.textContent, value));
-      // Nested option/label nodes represent one candidate; prefer the outer click handler.
-      const choices = candidates.filter(option => !candidates.some(other => other !== option && other.contains(option)));
-      if (choices.length !== 1) continue;
-      const choice = choices[0], panel = panels.find(panel => panel.contains(choice));
-      choice.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-      choice.click();
-      await sleep(200);
-      const display = getDropdownDisplayValue(el) || input.value;
-      const selected = choice.getAttribute('aria-selected') === 'true';
-      // The click must commit the selected value: panel dismissal or selected-state change is evidence.
-      if (sameSchool(display, value) && (selected || !choice.isConnected || !isVisible(panel)
-        || input.getAttribute('aria-expanded') === 'false' || el.getAttribute('aria-expanded') === 'false')) {
-        await closeOpenPanel(el, input);
-        return true;
-      }
-      break;
-    }
-    await closeOpenPanel(el, input);
-    return false;
-  }
   function safeOption(el) {
     return !el.closest('a[href], button[type="submit"], input, form [role="button"]') && el !== document.body;
   }
@@ -801,7 +779,11 @@
 
   // 通用下拉框填充（Ant Design / Element / Arco / 任意自定义下拉；支持省/市级联逐级选择）
   async function fillGenericDropdown(el, value) {
-    if (globalThis.__resumeSemantics.fieldKind(getLabelText(el), 'education') === 'school') return fillSchoolAutocomplete(el, value);
+    if (el.closest('[class*="cascader"],[class*="Cascader"]')) return fillLegacyDropdown(el, value);
+    const result = await componentControls.fillChoice(el, value);
+    return result;
+  }
+  async function fillLegacyDropdown(el, value) {
     const v = String(value || '').trim();
 
     // 1. 记录打开前已可见的选项（属于其他已打开的面板），避免误点；
@@ -964,32 +946,37 @@
 
   async function fillGenericDatepicker(el, value, selector) {
     const input = el.tagName === 'INPUT' ? el : (el.querySelector('input') || el);
-    const direct = await selectExactCalendarDay(input, value);
+    const interaction = await componentControls.fillCalendar(el, value);
+    if (interaction.filled) return interaction;
+    const precision = interaction.precision;
+    const target = precision === 'month' ? controlRules.formatDate(value, 'month') : value;
+    await closeOpenPanel(el, el, false);
+    const direct = await selectExactCalendarDay(input, target);
     if (direct) {
       await closeOpenPanel(el, el, false);
-      return matchesDate(input.value, value);
+      return { filled: matchesDate(input.value, target), precision };
     }
     await closeOpenPanel(el, el, false);
     // 优先：ant-design-vue 日历点选。readonly + controlled 的 DatePicker 直接 setter 赋值 + Enter
     // 不生效（实测：面板打开时赋值会被忽略，值回退为空），必须点日历格子真正选中
-    const ok = await selectDateInCalendar(input, value, selector);
+    const ok = await selectDateInCalendar(input, target, selector);
     if (ok) {
       // 已确认提交 → 用 Escape-first 可靠关闭面板（protect 的非破坏性关闭在 B 站不保证生效，
       // 残留面板会污染下一个日期字段的日历点选）
       await closeOpenPanel(el, el, false);
-      return matchesDate(input.value, value);
+      return { filled: matchesDate(input.value, target), precision };
     }
     // 次要：泛用年月网格日期选择器（如 Moka 自研组件，面板含 "N年" + 月份网格）
-    const genericOk = /\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(value) ? false : await selectDateInGenericPicker(input, value, selector);
+    const genericOk = /\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(target) ? false : await selectDateInGenericPicker(input, target, selector);
     if (genericOk) {
       await closeOpenPanel(el, el, false);
-      return matchesDate(input.value, value);
+      return { filled: matchesDate(input.value, target), precision };
     }
     // 兜底：先可靠关掉面板，再赋值 + Enter（ant readonly 上多不生效，但非 ant 控件可用）
     await closeOpenPanel(el, el, false);
     if (input.readOnly) return false;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-    if (setter) setter.call(input, value); else input.value = value;
+    if (setter) setter.call(input, target); else input.value = target;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     await sleep(120);
@@ -997,12 +984,25 @@
     await sleep(120);
     input.blur();
     await closeOpenPanel(el, el, true);
-    return matchesDate(input.value, value);
+    return { filled: matchesDate(input.value, target), precision };
   }
 
   async function fillDateRangePair(inputs, values) {
-    const fullDates = values.every(value => /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(value));
     await closeOpenPanel(inputs[0], inputs[0], false);
+    const details = [];
+    for (let index = 0; index < 2; index++) {
+      const detail = await componentControls.fillCalendar(inputs[index], values[index], { pending: true, alreadyOpen: index > 0 });
+      details.push(detail);
+      if (!detail.filled) break;
+    }
+    const precisions = inputs.map((input, index) => details[index]?.precision || controlRules.datePrecision(input));
+    values = values.map((value, index) => precisions[index] === 'month' ? controlRules.formatDate(value, 'month') : value);
+    const result = filled => ({ filled, precisions });
+    if (details.length === 2 && details.every(detail => detail.filled)) await componentControls.confirmCalendar(inputs[1]);
+    await closeOpenPanel(inputs[1], inputs[1], true);
+    if (details.length === 2 && details.every(detail => detail.filled) && inputs.every((input, index) => matchesDate(input.value, values[index]))) return result(true);
+    await closeOpenPanel(inputs[0], inputs[0], false);
+    const fullDates = values.every(value => /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(value));
     let selected = false;
     for (let index = 0; index < 2; index++) {
       const input = inputs[index], value = values[index];
@@ -1017,12 +1017,12 @@
       selected = false; break;
     }
     await closeOpenPanel(inputs[1], inputs[1], true);
-    if (selected && inputs.every((input, index) => matchesDate(input.value, values[index]))) return true;
+    if (selected && inputs.every((input, index) => matchesDate(input.value, values[index]))) return result(true);
     // Editable range inputs may support text entry. Readonly pickers must commit through their calendar.
-    if (inputs.some(input => input.readOnly)) return false;
+    if (inputs.some(input => input.readOnly)) return result(false);
     for (const index of [1, 0]) fillNativeInput(inputs[index], values[index]);
     await sleep(180);
-    return inputs.every((input, index) => matchesDate(input.value, values[index]));
+    return result(inputs.every((input, index) => matchesDate(input.value, values[index])));
   }
 
   // Current Ant/Element date panels expose ISO dates on cells. Use the full date, never day text alone.
@@ -1386,7 +1386,10 @@
         const input = el.querySelector('input:not([type="hidden"]),textarea');
         value = input?.value || getDropdownDisplayValue(el) || (el.isContentEditable ? el.textContent : '') || '';
       }
-      return { fieldId, value: value.slice(0, 20000), truncated: value.length > 20000 };
+      const record = fieldRegistry.get(fieldId);
+      const precision = record?.datePrecision || (record?.componentType === 'custom-datepicker' ? controlRules.datePrecision(el) : null);
+      return { fieldId, value: value.slice(0, 20000), truncated: value.length > 20000,
+        ...(['month', 'day', 'unknown'].includes(precision) ? { datePrecision: precision } : {}) };
     });
   }
   function sleep(ms) {
@@ -1479,8 +1482,9 @@
       try {
         const fields = collectFields();
         prepared = true;
-        sendResponse({ fields: fields.map(({ id, label, placeholder, name, componentType, section, sectionLabel, recordIndex, hasValue }) =>
-          ({ id, label, placeholder, name, componentType, section, sectionLabel, recordIndex, hasValue })) });
+        sendResponse({ contentVersion: CONTENT_VERSION, fields: fields.map(({ id, label, placeholder, name, componentType, section, sectionLabel, recordIndex, hasValue, datePrecision }) =>
+          ({ id, label, placeholder, name, componentType, section, sectionLabel, recordIndex, hasValue,
+            ...(datePrecision ? { datePrecision } : {}) })) });
       } catch (error) { prepared = false; sendResponse({ error: error.message }); }
       return false;
     }
