@@ -1,0 +1,35 @@
+.lab-page { --border: var(--line); max-width: 1120px; margin: 32px auto; padding: 0 28px 150px; }
+.lab-header { margin-bottom: 30px; }
+.eyebrow { color: var(--accent); font-size: 11px; letter-spacing: .14em; font-weight: 750; }
+.lab-header h1 { margin-top: 10px; font-size: 30px; }
+.lab-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin: 22px 0 12px; }
+.lab-toolbar a { text-decoration: none; font-size: 13px; }
+.lab-section { margin: 18px 0; padding: 26px; background: white; border: 1px solid var(--border); border-radius: 14px; }
+.lab-section h2 { margin: 0 0 6px; }
+.lab-hint { margin: 0 0 20px; color: var(--muted); font-size: 13px; }
+.entry-list { display: grid; gap: 20px; }
+.lab-record { padding-top: 20px; border-top: 1px solid var(--border); display: grid; grid-template-columns: 1fr 1fr; gap: 20px 28px; }
+.form-item { position: relative; min-width: 0; }
+.form-item > label, .field-label { display: block; margin-bottom: 8px; font-weight: 600; font-size: 14px; }
+.form-item > input, .form-item > select, .form-item > textarea { width: 100%; }
+.form-item textarea { min-height: 100px; }
+.form-item.full { grid-column: 1 / -1; }
+.form-item.invalid > input { border-color: #c33; }
+.lab-radio { display: flex; gap: 22px; padding-top: 8px; }
+.lab-radio label, .lab-footer label { display: flex; align-items: center; gap: 8px; }
+.lab-radio input, .lab-footer input { width: 17px; }
+.lab-add { width: 100%; margin-top: 22px; border: 1px dashed #93b4ef; background: #f8fbff; color: var(--accent); }
+.lab-menu { position: absolute; z-index: 1000; background: white; border: 1px solid #d7dfeb; box-shadow: 0 10px 35px #14254822; border-radius: 8px; padding: 6px; max-height: 260px; overflow: auto; }
+.lab-menu [role="option"] { padding: 11px 12px; cursor: pointer; border-radius: 4px; }
+.lab-menu [role="option"]:hover { background: #edf3ff; }
+.lab-calendar { position: absolute; z-index: 1001; width: 300px; background: white; padding: 14px; border: 1px solid #d7dfeb; border-radius: 10px; box-shadow: 0 10px 35px #14254822; }
+.lab-calendar select { width: 48%; margin-bottom: 12px; }
+.lab-calendar .calendar-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.lab-calendar button { background: #f2f5fa; color: #243552; padding: 8px; border: 0; min-width: 0; }
+.split-date { display: flex; gap: 8px; }
+.split-date select { min-width: 0; flex: 1; }
+.lab-footer { position: fixed; bottom: 0; left: 0; right: 0; z-index: 50; display: flex; justify-content: center; align-items: center; gap: 18px; padding: 18px; background: #ffffffef; border-top: 1px solid var(--border); }
+.lab-footer small { color: var(--muted); }
+.public-layout .lab-record { grid-template-columns: 1fr; }
+.public-layout .lab-section { max-width: 850px; margin-left: auto; margin-right: auto; }
+@media(max-width: 720px) { .lab-record { grid-template-columns: 1fr; } .lab-footer { flex-wrap: wrap; gap: 8px; padding: 10px; } }

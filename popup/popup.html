@@ -2,8 +2,8 @@
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>简历填写助手</title><link rel="stylesheet" href="../shared/ui.css"></head>
 <body class="popup"><main>
-  <h1>简历填写助手</h1>
-  <p class="muted">默认关闭。只在你开启的当前页面检测。</p>
+  <header class="brand"><img src="../icons/icon48.png" width="34" height="34" alt=""><div><p class="eyebrow">本机资料 · 手动确认</p><h1>简历填写助手</h1></div></header>
+  <p class="muted">先检测当前网页，再选择资料与填写方式。</p>
   <section class="card">
     <label class="switch" for="detection">本页手动检测<input id="detection" type="checkbox" role="switch" disabled></label>
     <p class="muted">检测到简历表单后弹出确认窗口。选择资料、检查预览，再确认填写。</p>
@@ -11,6 +11,6 @@
   </section>
   <p id="status" class="status" role="status" aria-live="polite">正在载入…</p>
   <div class="actions"><button id="open-options" type="button">编辑个人信息与 API</button></div>
-  <p class="muted">确认窗口可按所选资料数量补足经历条目。先手动展开需要填写的区块；未检测到表单会在 60 秒后停止。</p>
+  <p class="muted">确认页可关闭日期填写、补足经历栏。未检测到表单时，60 秒后停止。</p>
   <script type="module" src="popup.js"></script>
 </main></body></html>

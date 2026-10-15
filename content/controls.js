@@ -206,6 +206,7 @@
           || !visible(menu) || input?.getAttribute('aria-expanded') === 'false' || fieldRoot(el).getAttribute('aria-expanded') === 'false';
         if (matched && committed) {
           await close(el, input || el); await sleep(120);
+          if (kind === 'school') await sleep(350);
           if (optionScore(displayed(el), selectedText, kind) > 0) return true;
           return false;
         }
@@ -216,30 +217,38 @@
       const input = textInput(el), kind = kindOf(el);
       const assist = Boolean(hooks.resolveOption && (!hooks.canResolve || hooks.canResolve()));
       const terms = kind === 'school' ? [...new Set([String(value), String(value).replace(/\([^)]*\)|（[^）]*）/g, '').trim(),
-        /[（(]([^）)]+)[）)]/.exec(String(value))?.[1]].filter(Boolean))] : [String(value)];
+        /[（(]([^）)]+)[）)]/.exec(String(value))?.[1]].filter(Boolean))].slice(0, 2) : [String(value)];
       const before = new Set([...document.querySelectorAll(CHOICE_PANELS)].filter(visible));
       const signals = choiceSignals(el);
       await open(el);
       let detected = signals, searched = false, best = null, menus = [];
-      let searchIndex = 0;
+      let searchIndex = 0, sinceSearch = 0, stableFor = 0, lastSignature = '';
       // Do not write a readonly display field: it must select an actual option.
-      if (input && !input.readOnly && plain && !signals) { write(input, value); searched = true; }
-      const limit = signals || !plain || kind === 'school' ? 40 : 5;
+      if (input && !input.readOnly && (kind === 'school' || plain && !signals)) { write(input, value); searched = true; }
+      const limit = kind === 'school' ? 70 : signals || !plain ? 40 : 5;
       for (let i = 0; i < limit; i++) {
         await sleep(100); check();
+        sinceSearch += 100;
         menus = panels(el, CHOICE_PANELS, before);
         const options = menus.flatMap(optionElements);
         if (options.length) detected = true;
+        const signature = options.map(node => node.textContent.trim()).join('\n');
+        stableFor = signature && signature === lastSignature ? stableFor + 100 : 0;
+        lastSignature = signature;
+        const busy = kind === 'school' && [fieldRoot(el), ...menus].some(root => root.getAttribute('aria-busy') === 'true'
+          || [...root.querySelectorAll('[aria-busy="true"],[role="progressbar"],[class*="loading"],[class*="Loading"],[class*="spinner"]')].some(visible));
         best = rankOptions(options, value, kind);
+        if (kind === 'school' && (sinceSearch < 1000 || busy || options.length && stableFor < 300)) continue;
         if (best?.score >= .97 || best && !assist) break;
-        if (!best && input && !input.readOnly && kind === 'school' && searched && i >= 4 * (searchIndex + 1) && searchIndex + 1 < terms.length) {
+        if (!best && input && !input.readOnly && kind === 'school' && searched && sinceSearch >= 3500 && searchIndex + 1 < terms.length) {
           write(input, terms[++searchIndex]);
+          sinceSearch = 0; stableFor = 0; lastSignature = '';
           continue;
         }
-        // Leave time inside the field's five-second budget for semantic option selection.
-        if (options.length && assist && i >= Math.max(5, (terms.length - 1) * 4 + 2)) break;
+        // School search has a longer budget so debounce and remote results can settle.
+        if (options.length && assist && (kind === 'school' ? sinceSearch >= 2000 && searchIndex === terms.length - 1 : i >= 5)) break;
         if (input && !input.readOnly && !searched && (signals || options.length || i >= 1)) {
-          write(input, value); searched = true;
+          write(input, value); searched = true; sinceSearch = 0;
         }
       }
       if ((!best || best.score < .97) && assist) {
@@ -436,8 +445,11 @@
         if (!button || !safeCell(button)) break;
         button.click(); await sleep(180); panel = requery() || panel;
       }
-      if (!year) return { filled: false, precision, target };
-      check(); year.click(); await sleep(120); panel = requery() || panel;
+      const yearAlreadySelected = [...panel.querySelectorAll('select,input')].some(node => safeCell(node)
+        && /year|年份|年/i.test([node.className, node.name, node.getAttribute('aria-label'), node.getAttribute('title')].join(' '))
+        && parseInt(node.value, 10) === date.year);
+      if (!year && !yearAlreadySelected) return { filled: false, precision, target };
+      if (year) { check(); year.click(); await sleep(120); panel = requery() || panel; }
       if (precision === 'year') return { filled: await verify(), precision, target };
       const monthPattern = /^(?:\d{1,2}月?|[一二三四五六七八九十]{1,3}月|january|february|march|april|may|june|july|august|september|october|november|december|jan\.?|feb\.?|mar\.?|apr\.?|jun\.?|jul\.?|aug\.?|sep\.?|oct\.?|nov\.?|dec\.?)$/i;
       const monthButton = panel.querySelector('.ant-calendar-month-select,.ant-picker-month-btn,[class*="month-select"],[class*="month-btn"]');

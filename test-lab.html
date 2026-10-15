@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>招聘表单兼容性实验室 · 虚构资料</title>
+  <link rel="stylesheet" href="shared/ui.css">
+  <link rel="stylesheet" href="tests/browser/lab.css">
+</head>
+<body class="lab-page">
+  <header class="lab-header">
+    <span class="eyebrow">RESUME AUTOFILL / TEST LAB</span>
+    <h1>招聘表单兼容性实验室</h1>
+    <p class="muted">模拟企业常见填写交互，使用虚构资料。搜索词与已提交选项分别记录，便于发现“看似填入，实际没选中”的情况。</p>
+    <div class="lab-toolbar">
+      <a class="button secondary" href="?variant=enterprise">互联网企业布局</a>
+      <a class="button secondary" href="?variant=public">银行 / 国企布局</a>
+      <a class="button secondary" href="?variant=stress">超时与拒绝测试</a>
+      <button id="download-fixture" type="button">下载虚构资料 JSON</button>
+      <button id="validate" type="button" class="secondary">检查网页实际接受的值</button>
+    </div>
+    <p id="lab-mode" class="muted"></p>
+    <div id="lab-result" class="status" role="status" hidden></div>
+  </header>
+  <main id="lab-form"></main>
+  <footer class="lab-footer">
+    <label><input type="checkbox" id="agreement"> 测试协议复选框（扩展不应代选）</label>
+    <button type="button" id="upload" class="secondary">上传附件（仅计数）</button>
+    <button type="submit" id="submit">提交申请（仅计数）</button>
+    <small id="danger-counts">上传 0 次 · 提交 0 次</small>
+  </footer>
+  <script type="module" src="tests/browser/lab.js"></script>
+</body>
+</html>

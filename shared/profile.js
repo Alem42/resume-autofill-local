@@ -7,6 +7,8 @@ export const DEFAULT_MODEL = MODELS[0];
 export const MAX_FIELDS = 400;
 export const FIELD_BATCH_SIZE = 60;
 export const MAX_ENTRIES = 20;
+export const isDateField = field => semantics.isDateField(field);
+export const isDateSource = source => ['startDate', 'endDate', 'birthday', 'availableDate', 'expectedGraduationDate', 'date', 'expiryDate'].includes(source.fieldKey);
 export const PROFILE_SCHEMA = {
   basic: {
     title: '基本信息', fields: {
@@ -391,7 +393,7 @@ export function validateMatches(reply, fields, sources, { manualUnknown = false,
         : field.datePrecision === 'year' && /^\d{4}/.test(source.value) ? source.value.slice(0, 4)
         : field.datePrecision === 'month' && /^\d{4}[-/.]\d{1,2}/.test(source.value)
         ? source.value.replace(/^(\d{4})[-/.](\d{1,2}).*$/, (_, year, month) => `${year}-${month.padStart(2, '0')}`) : source.value,
-      componentType: field.componentType };
+      componentType: field.componentType, isDate: isDateField(field) };
   }).filter(Boolean);
 }
 

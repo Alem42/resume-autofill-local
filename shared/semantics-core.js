@@ -101,7 +101,9 @@
     projects: { role: /^(项目角色|担任角色)$/, responsibilities: /^(个人职责|个人贡献|个人职责\/贡献)$/,
       achievements: /^(项目成果|项目成效)$/, description: /^(项目描述|项目内容)$/ },
     research: { name: /^(课题名称|研究名称|科研项目名称|项目名称)$/ },
-    campus: { name: /^(活动名称|社团名称|活动\/社团名称)$/ },
+    campus: { name: /^(活动名称|社团名称|活动\/社团名称)$/, organization: /^(组织名称|组织|社团组织)$/, role: /^(担任职务|职务)$/ },
+    internships: { description: /^(实习描述|实习内容|职责描述)$/, responsibilities: /^(实习职责)$/ },
+    work: { description: /^(工作描述|工作内容|职责描述)$/, leavingReason: /^(离职原因)$/ },
     volunteer: { name: /^(志愿活动名称|活动名称|项目名称)$/ },
     portfolio: { name: /^(作品名称|作品名)$/ },
     training: { name: /^(培训名称|课程名称|培训\/课程名称)$/ },
@@ -121,6 +123,8 @@
     if (scope === 'basic' && /毕业(?:时间|年月|日期|年份|月份)|graduation(?:date|year|month)/.test(v)) return 'expectedGraduationDate';
     const contextual = Object.entries(contextualFields[scope] || {}).find(([, pattern]) => pattern.test(v));
     if (contextual) return contextual[0];
+    if (/^(?:获奖|考试|发表|申请|授权|颁发|获得|完成)(?:日期|时间|年月)$/.test(v)) return 'date';
+    if (/^(有效期|有效期至|到期日期|expirydate|expirationdate)$/.test(v)) return 'expiryDate';
     // These meanings must survive weak or misidentified section wrappers too.
     const language = Object.entries(contextualFields.languageCertificates).find(([, pattern]) => pattern.test(v));
     if (language && (scope !== 'professionalCertificates' || !['exam', 'level'].includes(language[0]))) return language[0];
@@ -147,7 +151,12 @@
     if (/^(项目名称|项目名|projectname)$/.test(v)) return 'projectName';
     return null;
   }
-  globalThis.__resumeSemantics = Object.freeze({ titles, section, headingSection, inferSection, fieldKind,
+  function isDateField(field) {
+    return field.componentType === 'custom-datepicker' || Boolean(field.datePart || field.datePrecision)
+      || /日期|年月|年份|月份|生日|起止时间|起止$|(?:出生|入学|毕业|入职|离职)(?:时间|年|月|日)|(?:开始|结束|起始|到岗|获奖|考试|发表|申请|授权|颁发|获得|完成)时间|有效期|到期|(?:start|end|birth|graduation)[_ -]?(?:date|time|year|month|day)|dateofbirth|birthday|expectedgraduation(?:date)?|availabledate|expiry|expiration/i
+        .test([field.label, field.name, field.placeholder].filter(Boolean).join(' '));
+  }
+  globalThis.__resumeSemantics = Object.freeze({ titles, section, headingSection, inferSection, fieldKind, isDateField,
     isAnchor: (key, text) => Boolean(anchors[key]?.test(String(text || '').replace(/^[\s*＊]+|[：:*＊\s?]+$/g, '').replace(/^(?:请输入|请选择|请填写)/, ''))),
     repeated: Object.freeze(Object.keys(anchors)) });
 })();

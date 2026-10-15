@@ -540,3 +540,62 @@ test('填写后发现网页只接受月份，AI校对使用相同的年月精度
   assert.equal(diagnostic.outcomes[0].datePrecision, 'month');
   assert.equal(JSON.stringify(diagnostic).includes('2024-09'), false);
 });
+
+test('关闭日期在后台过滤资料和字段，记住偏好且保留原始本机日期', async () => {
+  const profile = normalizeProfile({ basic: { name: 'DEMO_NAME', birthday: '2000-03-04' }, education: [{ school: 'DEMO_SCHOOL', startDate: '2020-09-12' }] });
+  const fields = [{ id: 'F0', label: '姓名', section: 'basic', componentType: 'native-input' },
+    { id: 'F1', label: '出生日期', section: 'basic', componentType: 'native-input' },
+    { id: 'F2', label: '毕业院校', section: 'education', recordIndex: 0, componentType: 'native-input' },
+    { id: 'F3', label: '入学时间', section: 'education', recordIndex: 0, componentType: 'custom-datepicker' }];
+  const f = fixture({ profile, fields, fetcher: async () => modelResponse({ mappings: [] }) }), flow = await f.detect();
+  const sourceIds = profileSources(profile).map(source => source.id);
+  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds, overwrite: false, includeDates: false, aiAssist: true }, flow.sender);
+  const data = await f.controller.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, flow.sender);
+  assert.equal(data.includeDates, false); assert.equal(data.excludedDates, 2);
+  assert.deepEqual(data.mappings.map(mapping => mapping.fieldId), ['F0', 'F2']);
+  const request = JSON.parse(JSON.parse(f.requests[0].init.body).messages[1].content);
+  assert.deepEqual(request.fields.map(field => field.id), ['F0', 'F2']);
+  assert.equal(/2000-03-04|2020-09-12/.test(JSON.stringify(request)), false);
+  assert.equal(f.outgoing.find(item => item.message?.type === 'PREPARE_FIELDS').message.includeDates, false);
+  await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0', 'F2'] }, flow.sender);
+  assert.equal(f.outgoing.find(item => item.message?.type === 'APPLY_FIELDS').message.includeDates, false);
+  assert.equal(f.api.storage.local.data.profile.basic.birthday, '2000-03-04');
+  await f.controller.handle({ type: 'SAVE_OPTIONS', profile, model: DEFAULT_MODEL, rememberKey: false, apiKey: '' }, options);
+  assert.equal(f.api.storage.local.data.settings.fillPreferences.includeDates, false);
+  const next = await f.detect();
+  assert.equal((await f.controller.handle({ type: 'GET_CONFIRMATION', requestId: next.requestId }, next.sender)).includeDates, false);
+});
+
+test('后台与网页版本不一致时中止匹配，提示重新加载和刷新网页，未请求模型', async () => {
+  const f = fixture({ pageHandler: message => message.type === 'PREPARE_FIELDS'
+    ? { contentVersion: '2.5.0', fields: [{ id: 'F0', label: '姓名', componentType: 'native-input' }] } : { ok: true } });
+  f.api.runtime.getManifest = () => ({ version: '2.6.0' }); const flow = await f.detect();
+  await assert.rejects(f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false }, flow.sender), /重新加载扩展并刷新招聘网页/);
+  assert.equal(f.requests.length, 0); assert.equal(f.outgoing.some(item => item.message?.type === 'APPLY_FIELDS'), false);
+});
+
+test('填写进度分别核验成功和跳过，忽略迟到的旧序号或倒退进度', async () => {
+  let f, flow;
+  f = fixture({ profile: normalizeProfile({ basic: { name: 'DEMO', phone: 'DEMO_PHONE' } }), fetcher: async () => modelResponse({ mappings: [] }),
+    pageHandler: async message => {
+      if (message.type === 'PREPARE_FIELDS') return { fields: [{ id: 'F0', label: '姓名', section: 'basic', componentType: 'native-input' }, { id: 'F1', label: '手机号', section: 'basic', componentType: 'native-input' }] };
+      if (message.type !== 'APPLY_FIELDS') return { ok: true };
+      const send = data => f.controller.handle({ type: 'FILL_PROGRESS', scanToken: flow.scanToken, total: 2, ...data }, page);
+      await send({ sequence: 1, done: 0, filled: 0, skipped: 0, currentFieldId: 'F0' });
+      await send({ sequence: 3, done: 1, filled: 0, skipped: 1, currentFieldId: 'F1' });
+      await send({ sequence: 2, done: 0, filled: 0, skipped: 0 });
+      let data = await f.controller.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, flow.sender);
+      assert.equal(data.progress.done, 1); assert.equal(data.progress.skipped, 1); assert.equal(data.progress.currentField, '手机号');
+      await assert.rejects(send({ sequence: 4, done: 1, filled: 1, skipped: 1 }), /计数/);
+      await assert.rejects(send({ sequence: 4, done: 1, currentFieldId: 'F99' }), /字段/);
+      await send({ sequence: 4, done: 2, filled: 1, skipped: 1 });
+      data = await f.controller.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, flow.sender);
+      assert.equal(data.progress.filled, 1); assert.equal(data.progress.skipped, 1);
+      return { filled: 1, skipped: 1, outcomes: [{ fieldId: 'F0', status: 'skipped', reason: 'field_timeout' }, { fieldId: 'F1', status: 'filled' }] };
+    } });
+  flow = await f.detect();
+  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0', 'S1'], overwrite: false }, flow.sender);
+  await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0', 'F1'] }, flow.sender);
+  const done = await f.controller.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, flow.sender);
+  assert.equal(done.fieldLabels[0].label, '姓名'); assert.equal(done.diagnostic.outcomes[0].reason, 'field_timeout');
+});

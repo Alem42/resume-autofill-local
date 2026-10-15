@@ -7,12 +7,14 @@
   let running = false;
   let prepared = false;
   let allowOverwrite = false;
+  let includeDates = true;
+  let excludedDates = 0;
   let observer = null;
   let detectionTimer = null;
   let debounceTimer = null;
   const fieldRegistry = new Map();
   const MAX_FIELDS = 400;
-  const CONTENT_VERSION = '2.5.0';
+  const CONTENT_VERSION = '2.6.0';
   const FIELD_TIMEOUT_MS = 5000;
   const clockNow = () => globalThis.performance?.now() ?? Date.now();
   let fieldOperation = null;
@@ -28,7 +30,7 @@
   function checkOperation() {
     if (!activeScanToken) throw new Error('填写已停止');
     if (fieldOperation && clockNow() >= fieldOperation.deadline) {
-      const error = new Error('单个字段已超过 5 秒'); error.code = 'FIELD_TIMEOUT'; throw error;
+      const error = new Error('字段填写超时'); error.code = 'FIELD_TIMEOUT'; throw error;
     }
   }
   async function resolveOption(el, options) {
@@ -244,6 +246,7 @@
   }
   function collectFields() {
     const fields = [];
+    excludedDates = 0;
     fieldRegistry.clear();
     const collected = new Set();
     const elements = scanFieldElements().filter(eligibleElement);
@@ -270,10 +273,12 @@
       name: el.name || el.getAttribute('name') || el.getAttribute('formcontrolname') || '',
       contextText: getContextText(el),
       required: isRequired(el), hasValue: fieldHasValue(el),
-      ...(componentType === 'custom-datepicker' || ['date', 'month'].includes(el.type) ? { datePrecision: controlRules.datePrecision(el) } : {}),
+      ...(componentType === 'custom-datepicker' || ['date', 'month', 'week', 'time', 'datetime-local'].includes(el.type) ? { datePrecision: controlRules.datePrecision(el) } : {}),
       ...fieldContexts.get(el)
     };
     if (split) field.datePart = split.part;
+    const isDate = globalThis.__resumeSemantics.isDateField(field);
+    if (!includeDates && isDate) { excludedDates++; return; }
     if (el.tagName === 'TEXTAREA' && /^(语言能力|语言水平|外语水平)$/.test(field.label)) field.intent = 'certificateSummary';
 
     // 采集可选项
@@ -294,7 +299,7 @@
     const hasOptions = field.options && field.options.length > 0;
     if (hasStrong || (field.contextText && hasOptions)) {
       fields.push(field);
-      fieldRegistry.set(field.id, { element: el, fingerprint: fingerprint(el), componentType,
+      fieldRegistry.set(field.id, { element: el, fingerprint: fingerprint(el), componentType, isDate,
         context: fieldContexts.get(el) });
     }
   }
@@ -451,7 +456,8 @@
   function splitDateInfo(el) {
     if (['date', 'month'].includes(el.type)) return null;
     const unit = value => /year|年份|(?:^|[^月日])年$|^yyyy$/i.test(value) ? 'year'
-      : /month|月份|^月$|^mm$/i.test(value) ? 'month' : /(?:^|_)day|日期中的日|^日$|^dd$/i.test(value) ? 'day' : null;
+      : /month|月份|^月$|^mm$/i.test(value) ? 'month'
+      : /(?:^|[_\s-])day(?:$|[_\s-])|日期中的日|^日$|^dd$/i.test(value) || /Day(?:\s|$)/.test(value) ? 'day' : null;
     const own = unit([el.name, el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.getAttribute('data-unit')].filter(Boolean).join(' '));
     for (let root = el.parentElement, depth = 0; root && root !== document.body && depth < 4; root = root.parentElement, depth++) {
       const parts = [...root.querySelectorAll('input,select')].filter(node => node.type !== 'hidden');
@@ -592,67 +598,78 @@
     }
     const ordered = rest.concat(dates.sort((a, b) => dateSortKey(b.value) - dateSortKey(a.value)));
     const handled = new Set();
+    let sequence = 0;
+    const reportProgress = (currentFieldId = null) => {
+      void chrome.runtime.sendMessage({ type: 'FILL_PROGRESS', scanToken: activeScanToken, sequence: ++sequence,
+        done: outcomes.length, total, filled: count, skipped: outcomes.length - count, currentFieldId }).catch(() => {});
+    };
 
     for (let i = 0; i < ordered.length; i++) {
       if (!activeScanToken || activeScanToken !== batchToken) throw new Error('填写已停止');
       const mapping = ordered[i];
       if (handled.has(mapping.fieldId)) continue;
-      // 防御：LLM 返回空值时跳过，避免填充空字段
-      if (mapping.value === null || mapping.value === undefined || mapping.value === '') {
-        if (onProgress) onProgress(i + 1, total);
-        continue;
-      }
-      const el = findElement(mapping.fieldId);
-      if (!el || (!allowOverwrite && fieldHasValue(el))) {
-        outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: el ? 'existing_value' : 'field_changed' });
-        if (onProgress) onProgress(i + 1, total);
-        continue;
-      }
-
-      const value = String(mapping.value);
-      const componentType = mapping.componentType || detectComponentType(el);
-      const range = componentType === 'custom-datepicker' && dateRangeInfo(el);
-      if (range) {
-        const pair = range.inputs.map(input => mappings.find(item => findElement(item.fieldId) === input));
-        // A shared picker can modify both dates. Operate it only when both fields were approved.
-        if (pair.every(Boolean) && pair.every(item => item.componentType === 'custom-datepicker')
-          && range.inputs.every(input => eligibleElement(input) && (allowOverwrite || !fieldHasValue(input)))) {
-          pair.forEach(item => handled.add(item.fieldId));
-          let response = { filled: false, precisions: [] };
-          try { response = await withinFieldBudget(mapping, el, () => fillDateRangePair(range.inputs, pair.map(item => String(item.value)))); } catch {}
-          const success = response.filled;
-          pair.forEach((item, index) => {
-            const precision = response.precisions[index];
-            if (['month', 'day'].includes(precision)) fieldRegistry.get(item.fieldId).datePrecision = precision;
-            outcomes.push({ fieldId: item.fieldId, status: success ? 'filled' : 'skipped',
-              ...(success ? {} : { reason: response.timeout ? 'field_timeout' : 'selection_not_committed' }),
-              ...(['year', 'month', 'day'].includes(precision) ? { datePrecision: precision } : {}) });
-          });
-          if (success) { count += 2; range.inputs.forEach(highlightField); }
-        } else {
-          handled.add(mapping.fieldId);
-          outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: 'range_requires_both' });
-        }
-        continue;
-      }
-
+      reportProgress(mapping.fieldId);
       try {
-        const response = await withinFieldBudget(mapping, el, () => fillByType(el, value, componentType, mapping.fieldId));
-        const detail = typeof response === 'object' && response ? response : { filled: Boolean(response) };
-        const filled = detail.filled;
-        if (filled) { highlightField(el); count++; }
-        outcomes.push({ fieldId: mapping.fieldId, status: filled ? 'filled' : 'skipped',
-          ...(filled ? {} : { reason: detail.timeout ? 'field_timeout' : 'selection_not_committed' }),
-          ...(typeof detail.dropdown === 'boolean' ? { dropdownDetected: detail.dropdown } : {}),
-          ...(['exact', 'alias', 'similar', 'ai', 'preference'].includes(detail.match) ? { optionMatch: detail.match } : {}),
-          ...(['year', 'day', 'month'].includes(detail.precision) ? { datePrecision: detail.precision } : {}) });
-        if (['year', 'day', 'month'].includes(detail.precision)) fieldRegistry.get(mapping.fieldId).datePrecision = detail.precision;
-      } catch {
-        // A component that refuses a synthetic event is counted as skipped.
-        outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: 'component_refused' });
-      }
-      if (onProgress) onProgress(i + 1, total);
-      void chrome.runtime.sendMessage({ type: 'FILL_PROGRESS', scanToken: activeScanToken, done: outcomes.length, total }).catch(() => {});
+        if (!includeDates && fieldRegistry.get(mapping.fieldId)?.isDate) {
+          outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: 'date_disabled' }); continue;
+        }
+        // 防御：LLM 返回空值时跳过，避免填充空字段
+        if (mapping.value === null || mapping.value === undefined || mapping.value === '') {
+          outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: 'empty_value' });
+          if (onProgress) onProgress(i + 1, total);
+          continue;
+        }
+        const el = findElement(mapping.fieldId);
+        if (!el || (!allowOverwrite && fieldHasValue(el))) {
+          outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: el ? 'existing_value' : 'field_changed' });
+          if (onProgress) onProgress(i + 1, total);
+          continue;
+        }
+
+        const value = String(mapping.value);
+        const componentType = mapping.componentType || detectComponentType(el);
+        const range = componentType === 'custom-datepicker' && dateRangeInfo(el);
+        if (range) {
+          const pair = range.inputs.map(input => mappings.find(item => findElement(item.fieldId) === input));
+          // A shared picker can modify both dates. Operate it only when both fields were approved.
+          if (pair.every(Boolean) && pair.every(item => item.componentType === 'custom-datepicker')
+            && range.inputs.every(input => eligibleElement(input) && (allowOverwrite || !fieldHasValue(input)))) {
+            pair.forEach(item => handled.add(item.fieldId));
+            let response = { filled: false, precisions: [] };
+            try { response = await withinFieldBudget(mapping, el, () => fillDateRangePair(range.inputs, pair.map(item => String(item.value)))); } catch {}
+            const success = response.filled;
+            pair.forEach((item, index) => {
+              const precision = response.precisions[index];
+              if (['month', 'day'].includes(precision)) fieldRegistry.get(item.fieldId).datePrecision = precision;
+              outcomes.push({ fieldId: item.fieldId, status: success ? 'filled' : 'skipped',
+                ...(success ? {} : { reason: response.timeout ? 'field_timeout' : 'selection_not_committed' }),
+                ...(['year', 'month', 'day'].includes(precision) ? { datePrecision: precision } : {}) });
+            });
+            if (success) { count += 2; range.inputs.forEach(highlightField); }
+          } else {
+            handled.add(mapping.fieldId);
+            outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: 'range_requires_both' });
+          }
+          continue;
+        }
+
+        try {
+          const response = await withinFieldBudget(mapping, el, () => fillByType(el, value, componentType, mapping.fieldId));
+          const detail = typeof response === 'object' && response ? response : { filled: Boolean(response) };
+          const filled = detail.filled;
+          if (filled) { highlightField(el); count++; }
+          outcomes.push({ fieldId: mapping.fieldId, status: filled ? 'filled' : 'skipped',
+            ...(filled ? {} : { reason: detail.timeout ? 'field_timeout' : 'selection_not_committed' }),
+            ...(typeof detail.dropdown === 'boolean' ? { dropdownDetected: detail.dropdown } : {}),
+            ...(['exact', 'alias', 'similar', 'ai', 'preference'].includes(detail.match) ? { optionMatch: detail.match } : {}),
+            ...(['year', 'day', 'month'].includes(detail.precision) ? { datePrecision: detail.precision } : {}) });
+          if (['year', 'day', 'month'].includes(detail.precision)) fieldRegistry.get(mapping.fieldId).datePrecision = detail.precision;
+        } catch {
+          // A component that refuses a synthetic event is counted as skipped.
+          outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: 'component_refused' });
+        }
+        if (onProgress) onProgress(i + 1, total);
+      } finally { reportProgress(); }
       await sleep(150);
     }
 
@@ -662,7 +679,8 @@
   }
 
   async function withinFieldBudget(mapping, el, task) {
-    fieldOperation = { fieldId: mapping.fieldId, deadline: clockNow() + FIELD_TIMEOUT_MS };
+    const timeoutMs = globalThis.__resumeSemantics.fieldKind(getLabelText(el), 'education') === 'school' ? 10000 : FIELD_TIMEOUT_MS;
+    fieldOperation = { fieldId: mapping.fieldId, deadline: clockNow() + timeoutMs };
     try { const result = await task(); checkOperation(); return result; }
     catch (error) {
       if (error.code !== 'FIELD_TIMEOUT') throw error;
@@ -1469,7 +1487,7 @@
     return new Promise(resolve => setTimeout(resolve, wait)).then(() => {
       if (!activeScanToken || token !== activeScanToken) throw new Error('填写已停止');
       if (operation && clockNow() >= operation.deadline) {
-        const error = new Error('单个字段已超过 5 秒'); error.code = 'FIELD_TIMEOUT'; throw error;
+        const error = new Error('字段填写超时'); error.code = 'FIELD_TIMEOUT'; throw error;
       }
     });
   }
@@ -1555,10 +1573,11 @@
       if (running) { sendResponse({ error: '正在填写' }); return false; }
       allowOverwrite = message.overwrite === true;
       includeExisting = message.includeExisting === true;
+      includeDates = message.includeDates !== false;
       try {
         const fields = collectFields();
         prepared = true;
-        sendResponse({ contentVersion: CONTENT_VERSION, fields: fields.map(({ id, label, placeholder, name, componentType, section, sectionLabel, recordIndex, hasValue, datePrecision, datePart, intent, options }) =>
+        sendResponse({ contentVersion: CONTENT_VERSION, excludedDates, fields: fields.map(({ id, label, placeholder, name, componentType, section, sectionLabel, recordIndex, hasValue, datePrecision, datePart, intent, options }) =>
           ({ id, label, placeholder, name, componentType, section, sectionLabel, recordIndex, hasValue,
             ...(datePrecision ? { datePrecision } : {}), ...(datePart ? { datePart } : {}), ...(intent ? { intent } : {}), ...(options ? { options } : {}) })) });
       } catch (error) { prepared = false; sendResponse({ error: error.message }); }
@@ -1584,6 +1603,7 @@
       prepared = false;
       allowOverwrite = message.overwrite === true;
       optionAssistance = message.aiAssist === true;
+      includeDates = message.includeDates !== false;
       executeFill(message.mappings, null, auditFieldIds).then(result => {
         running = false; stopAll(); sendResponse(result);
       }).catch(() => { running = false; stopAll(); sendResponse({ error: '填写中断，请检查已填写字段' }); });

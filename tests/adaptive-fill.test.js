@@ -257,3 +257,77 @@ test('未知精度的年份优先组件在月选择后需要内部确认时，�
   const result = await f.send({ type: 'APPLY_FIELDS', mappings: [{ fieldId: fields[0].id, componentType: fields[0].componentType, value: '2024-09-13' }] });
   assert.equal(result.filled, 1); assert.equal(input.value, '2024-09'); assert.equal(result.outcomes[0].datePrecision, 'month');
 });
+
+test('日期开关识别不同日期形态，毕业院校、离职原因和工作年限不会误判', async () => {
+  const { isDateField, isDateSource } = await import('../shared/profile.js');
+  for (const field of [{ label: '毕业时间' }, { label: '出生日期' }, { name: 'startMonth' }, { datePart: 'day' },
+    { componentType: 'custom-datepicker' }, { label: '有效期' }, { label: '预计毕业时间' }]) assert.equal(isDateField(field), true, JSON.stringify(field));
+  for (const label of ['毕业院校', '入学方式', '离职原因', '工作年限', '学校名称', '最高学历']) assert.equal(isDateField({ label }), false, label);
+  assert.equal(isDateSource({ fieldKey: 'startDate' }), true); assert.equal(isDateSource({ fieldKey: 'workYears' }), false);
+});
+
+test('关闭日期在扫描与执行两层跳过，学校和非日期内容仍填写；每个跳过都会更新进度', async () => {
+  const f = domFixture(), group = f.section('教育经历');
+  const record = f.record(group, [['毕业院校'], ['开始日期', { type: 'date' }], ['结束日期', { type: 'month' }]]);
+  await f.start();
+  const scanned = await f.prepare({ includeDates: false });
+  assert.equal(scanned.excludedDates, 2); assert.equal(scanned.fields.length, 1); assert.equal(scanned.fields[0].label, '毕业院校');
+  const { fields } = await f.prepare({ includeDates: true });
+  const result = await f.send({ type: 'APPLY_FIELDS', includeDates: false,
+    mappings: fields.map(field => ({ fieldId: field.id, componentType: field.componentType, value: field.label === '毕业院校' ? '演示大学' : '2024-09-13' })) });
+  assert.equal(result.filled, 1); assert.equal(result.skipped, 2);
+  assert.ok(result.outcomes.filter(item => item.status === 'skipped').every(item => item.reason === 'date_disabled'));
+  assert.deepEqual(record.querySelectorAll('input').map(input => input.value), ['演示大学', '', '']);
+  const updates = f.messages.filter(message => message.type === 'FILL_PROGRESS');
+  assert.ok(updates.every(message => message.filled + message.skipped === message.done));
+  assert.deepEqual(updates.map(message => message.done), [0, 1, 1, 2, 2, 3]);
+  assert.equal(updates.at(-1).skipped, 2); assert.equal(updates.at(-1).total, 3);
+});
+
+test('学校搜索等待三秒返回的真实候选，不提前切短搜索词，仍须点击才成功', async () => {
+  const f = domFixture(), group = f.section('教育经历');
+  const record = f.record(group, [['学校', { type: 'search', role: 'combobox' }]]), input = record.querySelector('input');
+  const clock = simulatedClock(f), menu = f.node('div', { role: 'listbox' }); menu.hidden = true; f.doc.body.append(menu);
+  const option = f.node('div', { role: 'option' }, '演示大学(Demo University)'); menu.append(option);
+  let started, clicked; const searches = [];
+  input.onEvent = event => { if (event.type === 'input') { searches.push(input.value); started ??= clock(); } };
+  const schedule = f.context.setTimeout;
+  f.context.setTimeout = (fn, ms) => schedule(() => { if (started !== undefined && clock() - started >= 3000 && clicked === undefined) menu.hidden = false; fn(); }, ms);
+  option.onClick = () => { clicked = clock(); input.value = option.textContent; menu.hidden = true; };
+  await f.start(); const { fields } = await f.prepare();
+  const result = await f.send({ type: 'APPLY_FIELDS', mappings: [{ fieldId: fields[0].id, componentType: fields[0].componentType, value: option.textContent }] });
+  assert.equal(result.filled, 1); assert.ok(clicked - started >= 3000); assert.ok(clicked - started < 10000);
+  assert.deepEqual(searches, [option.textContent]);
+});
+
+test('日期拆分支持 startDateDay 驼峰命名，不将 Birthday 普通文本误判成日下拉', async () => {
+  const f = domFixture(), group = f.section('项目经历'), record = f.record(group, [['项目名称']]);
+  const row = f.node('div', { class: 'form-item' }); row.append(f.node('label', {}, '结束日期'));
+  for (const [part, value] of [['Year', '2025'], ['Month', '2'], ['Day', '16']]) {
+    const input = f.node('select', { name: 'endDate' + part }); input.append(f.node('option', { value: '' }, '请选择'), f.node('option', { value }, value)); row.append(input);
+  }
+  record.append(row); await f.start(); const { fields } = await f.prepare();
+  assert.deepEqual(fields.filter(field => field.datePart).map(field => field.datePart), ['year', 'month', 'day']);
+  const result = await f.send({ type: 'APPLY_FIELDS', mappings: pairAll(normalizeFields(fields), allSources({ projects: [{ projectName: '演示项目', endDate: '2025-02-16' }] })) });
+  assert.equal(result.filled, 4); assert.deepEqual(row.querySelectorAll('select').map(input => input.value), ['2025', '2', '16']);
+});
+
+test('月历年份使用原生下拉框时，切换年份后直接选择目标月份并确认', async () => {
+  const f = domFixture(), group = f.section('教育经历');
+  const record = f.record(group, [['结束日期', { 'data-format': 'YYYY-MM' }]]), input = record.querySelector('input'); input.readOnly = true;
+  const panel = f.node('div', { class: 'flatpickr-calendar' }); panel.hidden = true; f.doc.body.append(panel);
+  const year = f.node('select', { 'aria-label': 'Year' });
+  for (const value of ['2026', '2024']) year.append(f.node('option', { value }, value)); panel.append(year);
+  for (let month = 1; month <= 12; month++) { const cell = f.node('button', { type: 'button' }, month + '月');
+    cell.onClick = () => { input.value = `${year.value}-${String(month).padStart(2, '0')}`; panel.hidden = true; }; panel.append(cell); }
+  input.onClick = () => { panel.hidden = false; }; await f.start(); const { fields } = await f.prepare();
+  const result = await f.send({ type: 'APPLY_FIELDS', mappings: [{ fieldId: fields[0].id, componentType: fields[0].componentType, value: '2024-06-18' }] });
+  assert.equal(result.filled, 1); assert.equal(input.value, '2024-06');
+});
+
+test('日期关闭也排除没有日期标签的原生 week/time/datetime-local 控件', async () => {
+  const f = domFixture(), group = f.section('基本信息');
+  f.record(group, [['姓名'], ['预约时刻', { type: 'time' }], ['所在周', { type: 'week' }], ['约定时刻', { type: 'datetime-local' }]]);
+  await f.start(); const scanned = await f.prepare({ includeDates: false });
+  assert.equal(scanned.excludedDates, 3); assert.deepEqual(scanned.fields.map(field => field.label), ['姓名']);
+});

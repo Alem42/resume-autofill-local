@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { domFixture } from './dom-fixture.js';
-import { PROFILE_SCHEMA, selectedSources, recordTargets, profileSources, normalizeProfile, diagnosticReason } from '../shared/profile.js';
+import { PROFILE_SCHEMA, selectedSources, recordTargets, profileSources, normalizeProfile, diagnosticReason, isDateSource } from '../shared/profile.js';
 
 // Exercise the real confirmation UI against a small DOM adapter and a mock worker.
 async function confirmation(data, handler) {
@@ -34,7 +34,7 @@ async function confirmation(data, handler) {
   f.context.Blob = class { constructor(parts) { this.text = parts.join(''); } };
   f.context.URL = class extends URL { static createObjectURL(blob) { downloads.push(JSON.parse(blob.text)); return 'blob:diagnostic'; } static revokeObjectURL() {} };
   f.context.location.href = 'chrome-extension://testextensionid/confirm/confirm.html?requestId=request-1';
-  Object.assign(f.context, { PROFILE_SCHEMA, selectedSources, recordTargets, diagnosticReason });
+  Object.assign(f.context, { PROFILE_SCHEMA, selectedSources, recordTargets, diagnosticReason, isDateSource });
   f.context.chrome.runtime.sendMessage = async message => {
     requests.push(structuredClone(message));
     if (message.type === 'GET_CONFIRMATION') return structuredClone(current);
@@ -48,7 +48,8 @@ async function confirmation(data, handler) {
   async function fire(node, type, trusted = true) {
     for (const listener of node.listeners?.[type] || []) await listener({ isTrusted: trusted, target: node, currentTarget: node });
   }
-  return { ...f, nodes, requests, downloads, fire };
+  return { ...f, nodes, requests, downloads, fire, setCurrent(value) { current = structuredClone(value); },
+    refresh: () => vm.runInContext('refresh()', f.context) };
 }
 const mapping = (fieldId, extra = {}) => ({ fieldId, sourceId: 'S0', fieldLabel: '姓名', sourceLabel: '基本信息 / 姓名', value: 'LOCAL_DEMO', componentType: 'native-input', ...extra });
 
@@ -139,4 +140,54 @@ test('模糊模式默认选中候选及AI疑点，但保护已有内容并显示
   assert.deepEqual(inputs.map(input => Boolean(input.checked)), [true, true, false]);
   assert.equal(inputs[2].disabled, true); assert.ok(f.nodes.get('mappings').textContent.includes('网页区块不明确'));
   assert.ok(f.nodes.get('preparation-report').textContent.includes('模糊匹配已开启'));
+});
+
+test('关闭日期会禁用日期资料且全选不能重新带入，重新开启恢复先前勾选', async () => {
+  const sources = profileSources(normalizeProfile({ basic: { name: 'DEMO', birthday: '2000-03-04' }, education: [{ school: '演示大学', startDate: '2020-09-10' }] }));
+  const f = await confirmation({ status: 'detected', sources });
+  f.nodes.get('include-dates').checked = false; await f.fire(f.nodes.get('include-dates'), 'change');
+  await f.fire(f.nodes.get('select-all'), 'click');
+  const boxes = f.nodes.get('sources').querySelectorAll('input');
+  for (const source of sources.filter(isDateSource)) {
+    const box = boxes.find(box => box.value === source.id); assert.equal(box.checked, false); assert.equal(box.disabled, true);
+  }
+  f.nodes.get('include-dates').checked = true; await f.fire(f.nodes.get('include-dates'), 'change');
+  assert.ok(boxes.every(box => box.checked && !box.disabled));
+  f.nodes.get('include-dates').checked = false; await f.fire(f.nodes.get('include-dates'), 'change');
+  await f.fire(f.nodes.get('match'), 'click');
+  const message = f.requests.find(request => request.type === 'MATCH_FIELDS');
+  assert.equal(message.includeDates, false);
+  assert.deepEqual(message.sourceIds, sources.filter(source => !isDateSource(source)).map(source => source.id));
+});
+
+test('未知总量不画百分比，填写进度分开显示处理、成功和跳过，结束后显示真实计数', async () => {
+  const f = await confirmation({ status: 'matching', progress: { stage: 'adding', done: 0, total: 0 } });
+  assert.equal(f.nodes.get('activity-progress').hidden, true);
+  assert.equal(f.nodes.get('activity-indeterminate').hidden, false);
+  f.setCurrent({ status: 'applying', progress: { stage: 'applying', done: 8, total: 20, filled: 6, skipped: 2 } }); await f.refresh();
+  assert.equal(f.nodes.get('activity-progress').value, 8);
+  assert.match(f.nodes.get('activity-counter').textContent, /8 \/ 20/);
+  assert.match(f.nodes.get('activity-counts').textContent, /已填写 6 · 需手填 2/);
+  f.setCurrent({ status: 'completed', excludedDates: 9, result: { filled: 6, skipped: 14, outcomes: [] } }); await f.refresh();
+  assert.equal(f.nodes.get('activity-panel').hidden, true); assert.equal(f.nodes.get('completion').hidden, false);
+  assert.equal(f.nodes.get('result-filled').textContent, '6'); assert.equal(f.nodes.get('result-skipped').textContent, '14');
+  assert.equal(f.nodes.get('result-dates').textContent, '9'); assert.match(f.nodes.get('completion-title').textContent, /部分/);
+});
+
+test('填写结束后迟到的轮询不能把界面切回填写中', async () => {
+  const f = await confirmation({ status: 'preview', mappings: [mapping('F0')] }, () => ({ filled: 1, skipped: 0 }));
+  let release; const original = f.context.chrome.runtime.sendMessage;
+  f.context.chrome.runtime.sendMessage = message => message.type === 'GET_CONFIRMATION'
+    ? new Promise(resolve => { release = resolve; }) : original(message);
+  const stale = f.refresh();
+  await f.fire(f.nodes.get('apply'), 'click');
+  release({ status: 'applying', progress: { done: 0, total: 1 } }); await stale;
+  assert.equal(f.nodes.get('completion').hidden, false); assert.equal(f.nodes.get('activity-panel').hidden, true);
+});
+
+test('重新打开结果页仍使用区块、条目和字段名称展示失败原因', async () => {
+  const f = await confirmation({ status: 'completed', result: { filled: 0, skipped: 1, outcomes: [{ fieldId: 'F23', status: 'skipped', reason: 'field_timeout' }] },
+    fieldLabels: [{ fieldId: 'F23', label: '学校名称', section: 'education', recordIndex: 1 }] });
+  assert.match(f.nodes.get('review-results').textContent, /教育经历 · 第 2 条 \/ 学校名称/);
+  assert.match(f.nodes.get('review-results').textContent, /超时/);
 });

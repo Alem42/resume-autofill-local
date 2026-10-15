@@ -13,6 +13,7 @@ Thumbs.db
 .playwright-cli/
 .playwright-mcp/
 .sisyphus/
+.preview/
 
 # Personal backups and local secrets
 personal-profile*.json

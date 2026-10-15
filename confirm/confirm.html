@@ -2,39 +2,52 @@
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>确认填写 · 简历填写助手</title><link rel="stylesheet" href="../shared/ui.css"></head>
 <body class="confirm"><main>
-  <h1>检测到简历表单</h1>
-  <p>是否允许填写这个页面？请核对地址，并选择本次允许使用的资料。</p>
-  <p id="target-site" class="site"></p>
-  <p class="notice">先确认资料范围，再预览具体字段。默认发送字段描述、可选项文字与资料项名称。开启 AI 辅助后允许发送所选资料值，并在点选前判断候选。额外开启内容校对才发送对应字段的已有值 / 填写结果。确认写入后，网站可以读取或自动保存填写内容。</p>
+  <header class="app-header">
+    <div class="brand"><img src="../icons/icon48.png" width="40" height="40" alt=""><div><p class="eyebrow">简历填写助手 <span class="badge">本机资料</span></p><h1 id="flow-title">选择本次填写内容</h1></div></div>
+    <p class="muted">选好范围，检查预览，再确认写入。</p>
+    <details class="target-details"><summary>目标网页 <strong id="target-host">正在读取…</strong><span>查看完整地址</span></summary><p id="target-site" class="site"></p></details>
+  </header>
+  <ol class="flow-steps" aria-label="填写流程">
+    <li id="step-1" class="step current">1 <span>选择资料</span></li><li id="step-2" class="step">2 <span>匹配与预览</span></li><li id="step-3" class="step">3 <span>填写网页</span></li><li id="step-4" class="step">4 <span>检查结果</span></li>
+  </ol>
+  <p id="status" class="status" role="status" aria-live="polite">正在载入…</p>
+  <section id="activity-panel" class="activity card" hidden aria-label="当前处理进度">
+    <div class="section-heading"><div><p class="eyebrow">当前阶段</p><h2 id="activity-title">正在准备</h2></div><span id="activity-time" class="muted" aria-live="off"></span></div>
+    <p id="activity-detail" class="activity-detail"></p>
+    <progress id="activity-progress" max="1" value="0" aria-label="当前阶段处理进度" hidden></progress><div id="activity-indeterminate" class="indeterminate" hidden><span></span></div>
+    <div class="progress-meta"><strong id="activity-counter"></strong><span id="activity-counts" class="muted"></span></div>
+    <p class="muted">普通字段最多 5 秒；学校搜索最多 10 秒。超时会跳过并继续。</p>
+  </section>
   <section id="selection" class="card" hidden>
-    <h2>本次允许填写的资料</h2>
-    <div class="actions"><button id="select-all" type="button">全选资料</button><button id="select-none" type="button">全部取消</button></div>
-    <div id="sources"></div>
-    <p id="record-summary" class="notice"></p>
-    <label class="check-row"><input id="relaxed" type="checkbox" checked><span>尽量填写，允许模糊匹配<small class="value">默认开启。区块、条目或措辞不明确的候选仍进入预览并默认勾选，AI 的疑点也保留供你审核。请逐项检查后再确认。取消勾选可使用严格模式。</small></span></label>
-    <label class="check-row"><input id="auto-add" type="checkbox" checked><span>自动补足缺少的经历条目<small class="value">确认后按所选资料数量点击明确的“添加教育 / 项目 / 实习 / 获奖”等按钮，只创建空表单。不点击保存、上传或投递；取消不会移除已添加的空条目。</small></span></label>
-    <label class="check-row"><input id="ai-assist" type="checkbox"><span>AI 语义匹配与下拉选项辅助<small class="value">允许发送本次所选资料值；本机无法确定选项时，将当前字段、目标值和候选文字交给 DeepSeek，在点击前判断。单个字段最多处理 5 秒，超时跳过，不反复重试。</small></span></label>
-    <label class="check-row"><input id="ai-review" type="checkbox"><span>额外进行填写前后内容校对<small class="value">需要同时开启 AI 辅助。额外发送对应网页字段的已有值和填写结果，会增加等待时间。默认关闭，不影响下拉选项辅助。</small></span></label>
-    <p class="muted">语种、熟练度、考试名称、分数分别匹配；熟练度优先选择最高可用等级。考试及成绩使用设置页资料，不会复制到其他语言栏。</p>
-    <label class="check-row"><input id="overwrite" type="checkbox"><span>允许覆盖已有内容<small class="value">默认保留已有值。AI 校对可指出差异，但不会擅自覆盖。</small></span></label>
-    <div class="actions"><button id="match" class="primary" type="button">确认资料范围，准备表单并匹配</button></div>
+    <div class="section-heading"><div><h2>填写方式</h2><p class="muted">日期可以留给自己填写，其他资料照常匹配。</p></div></div>
+    <div class="fill-settings">
+      <label class="setting-option"><input id="include-dates" type="checkbox" checked><span><strong>自动填写日期</strong><small>包括生日、经历起止时间、毕业和考试日期。关闭后不匹配、不填写，资料中的日期仍保留。</small></span></label>
+      <label class="setting-option"><input id="auto-add" type="checkbox" checked><span><strong>自动添加经历栏</strong><small>按所选经历数量补足空表单。不会点击保存或投递；取消不会删除已添加的空栏。</small></span></label>
+      <label class="setting-option"><input id="ai-assist" type="checkbox"><span><strong>AI 帮助理解选项</strong><small>允许发送所选资料值。在本机难以确定下拉候选时，由 AI 在点选前判断。</small></span></label>
+    </div>
+    <details class="advanced-options"><summary>更多选项与数据发送说明</summary>
+      <label class="check-row"><input id="relaxed" type="checkbox" checked><span>尽量填写，允许模糊匹配<small class="value">归类或措辞不明确的候选也进入预览，请审核后再确认。</small></span></label>
+      <label class="check-row"><input id="overwrite" type="checkbox"><span>覆盖网页已有内容<small class="value">默认保留已有值。</small></span></label>
+      <label class="check-row"><input id="ai-review" type="checkbox"><span>额外进行填写前后 AI 校对<small class="value">需同时开启 AI 选项辅助；会额外发送对应字段已有值和填写结果，增加等待时间。</small></span></label>
+      <p class="muted">默认只发送字段描述、可选项文字和资料项名称。开启 AI 辅助才发送所选资料值。确认写入后，目标网站可以读取或自动保存内容。语种、熟练度、考试名称和成绩分别匹配。</p>
+    </details>
+    <div class="section-heading source-heading"><div><h2>本次使用的资料 <span id="source-count" class="badge"></span></h2><p class="muted">展开分类可核对内容，取消勾选即可排除。</p></div><div class="actions compact"><button id="select-all" class="subtle" type="button">全选</button><button id="select-none" class="subtle" type="button">清空选择</button></div></div>
+    <div id="sources"></div><p id="record-summary" class="muted"></p>
   </section>
   <section id="preview" class="card" hidden>
-    <h2>填写预览</h2>
-    <p class="muted">请检查对应关系，取消勾选不需要填写的字段。</p>
-    <div id="preparation-report"></div>
-    <div id="mappings"></div>
-    <details id="unmatched-panel" hidden><summary>未匹配字段（可手动选择对应资料）</summary><div id="unmatched"></div></details>
-    <div class="actions"><button id="apply" class="primary" type="button">确认填写所选字段</button></div>
+    <div class="section-heading"><div><h2>检查填写预览</h2><p id="preview-summary" class="muted"></p></div><div class="actions compact"><button id="preview-select-all" class="subtle" type="button">全选可填项</button><button id="preview-select-none" class="subtle" type="button">清空选择</button></div></div>
+    <div id="preparation-report"></div><div id="mappings"></div>
+    <details id="unmatched-panel" class="advanced-options" hidden><summary>未匹配字段 <span id="unmatched-count" class="badge"></span></summary><p class="muted">需要时可手动选择本次已授权的资料。</p><div id="unmatched"></div></details>
   </section>
-  <section id="after-review" class="card" hidden><h2>填写后的内容校对</h2><p class="muted">AI 校对不等于事实认证，请回到网页核对；需要修正时可重新检测或手动编辑。</p><div id="review-results"></div></section>
-  <p id="status" class="status" role="status" aria-live="polite">正在载入…</p>
-  <details id="diagnostic-panel" class="card" hidden>
-    <summary>本机匹配诊断</summary>
-    <p id="diagnostic-summary"></p>
-    <p class="muted">诊断只含字段编号、资料编号、分类、条目序号、对应关系、执行状态、控件精度、候选匹配类别和拦截原因，不含个人资料值、网页字段原文、网址、API Key 或模型原始回复。只保存在本次浏览器会话，不会自动上传。</p>
-    <button id="export-diagnostic" type="button">导出诊断 JSON</button>
+  <section id="completion" class="card completion" hidden>
+    <p class="eyebrow">本次处理结果</p><h2 id="completion-title">处理结束</h2><p id="completion-description" class="muted"></p>
+    <div class="result-stats"><div><strong id="result-filled">0</strong><span>已填写</span></div><div><strong id="result-skipped">0</strong><span>需手动检查</span></div><div><strong id="result-dates">0</strong><span>按设置跳过日期</span></div></div>
+    <p class="muted">请回到网页检查，并手动保存或提交。</p>
+  </section>
+  <section id="after-review" class="card" hidden><h2>需要你检查</h2><p class="muted">未完成的字段和 AI 提示汇总在这里，已填内容请以网页实际结果为准。</p><div id="review-results"></div></section>
+  <details id="diagnostic-panel" class="diagnostic" hidden>
+    <summary>查看本机诊断</summary><p id="diagnostic-summary" class="muted"></p><p class="muted">仅包含编号、分类、计数和执行状态；不包含资料值、网页原文、网址、密钥或模型原始回复。</p><button id="export-diagnostic" type="button">导出诊断 JSON</button>
   </details>
-  <div class="actions"><button id="cancel" type="button">取消并关闭本页检测</button></div>
+  <footer class="flow-actions"><div class="flow-actions-inner"><span id="action-hint" class="muted">正在读取当前任务</span><div class="actions compact"><button id="cancel" type="button">取消</button><button id="match" class="primary" type="button" hidden>匹配并预览</button><button id="apply" class="primary" type="button" hidden>确认填写</button></div></div></footer>
   <script type="module" src="confirm.js"></script>
 </main></body></html>
