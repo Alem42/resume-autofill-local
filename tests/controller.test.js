@@ -56,6 +56,72 @@ function fixture({ legacy, fetcher, fields, profile = defaultProfile, pageHandle
   return { api, controller, requests, outgoing, detect, target, listeners };
 }
 
+test('下拉AI只在第二次确认后接受当前文档的批准字段，每字段最多请求一次且不顺带校对', async () => {
+  let chosen, f, flow;
+  const profile = normalizeProfile({ education: [{ majorCategory: '工学' }], basic: { name: 'UNSELECTED_PRIVATE' } });
+  f = fixture({ profile, fields: [{ id: 'F0', label: '专业类别', section: 'education', recordIndex: 0, componentType: 'custom-dropdown' }],
+    fetcher: async (url, init) => {
+      const request = JSON.parse(JSON.parse(init.body).messages[1].content);
+      return modelResponse(request.targetValue ? { index: 1 } : { mappings: [{ fieldId: 'F0', sourceId: 'S1' }] });
+    }, pageHandler: async message => {
+      if (message.type === 'PREPARE_FIELDS') return { fields: [{ id: 'F0', label: '专业类别', section: 'education', recordIndex: 0, componentType: 'custom-dropdown' }] };
+      if (message.type !== 'APPLY_FIELDS') return { ok: true };
+      const request = { type: 'RESOLVE_OPTION', scanToken: flow.scanToken, fieldId: 'F0', options: ['Science', 'Engineering'], timeoutMs: 1500 };
+      for (const sender of [{ ...page, documentId: 'other' }, { ...page, frameId: 2 }]) await assert.rejects(f.controller.handle(request, sender));
+      await assert.rejects(f.controller.handle({ ...request, fieldId: 'F1' }, page));
+      await assert.rejects(f.controller.handle({ ...request, timeoutMs: 99999 }, page));
+      chosen = await f.controller.handle(request, page);
+      assert.deepEqual(await f.controller.handle(request, page), { index: null });
+      await f.controller.handle({ type: 'FILL_PROGRESS', scanToken: flow.scanToken, done: 1, total: 1 }, page);
+      assert.equal((await f.controller.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, flow.sender)).progress.done, 1);
+      return { filled: 1, skipped: 0, outcomes: [{ fieldId: 'F0', status: 'filled', optionMatch: 'ai' }] };
+    } });
+  flow = await f.detect();
+  const premature = { type: 'RESOLVE_OPTION', scanToken: flow.scanToken, fieldId: 'F0', options: ['Engineering'], timeoutMs: 1000 };
+  await assert.rejects(f.controller.handle(premature, page));
+  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S1'], aiAssist: true, overwrite: false }, flow.sender);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.outgoing.some(item => item.message?.type === 'READ_VALUES'), false);
+  const result = await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0'] }, flow.sender);
+  assert.deepEqual(chosen, { index: 1 }); assert.equal(result.filled, 1); assert.equal(f.requests.length, 2);
+  assert.equal(f.requests.some(request => request.init.body.includes('UNSELECTED_PRIVATE')), false);
+  const optionRequest = JSON.parse(JSON.parse(f.requests[1].init.body).messages[1].content);
+  assert.equal(optionRequest.targetValue, '工学'); assert.deepEqual(optionRequest.options, ['Science', 'Engineering']);
+  await assert.rejects(f.controller.handle(premature, page));
+  assert.equal(f.api.storage.session.data.lastDiagnostic.outcomes[0].optionMatch, 'ai');
+});
+
+test('AI 选项响应只能是当前候选编号，拒绝代码、新值和越界编号，关闭辅助时不接受候选请求', async () => {
+  for (const reply of [{ index: 9 }, { index: 0, value: 'invented' }, { index: '0' }, { index: null }]) {
+    let f, flow;
+    f = fixture({ fetcher: async (url, init) => modelResponse(JSON.parse(JSON.parse(init.body).messages[1].content).targetValue ? reply : { mappings: [{ fieldId: 'F0', sourceId: 'S0' }] }),
+      pageHandler: async message => {
+        if (message.type === 'PREPARE_FIELDS') return { fields: [{ id: 'F0', label: '姓名', componentType: 'native-input' }] };
+        if (message.type === 'APPLY_FIELDS') {
+          assert.deepEqual(await f.controller.handle({ type: 'RESOLVE_OPTION', scanToken: flow.scanToken, fieldId: 'F0', options: ['候选'], timeoutMs: 500 }, page), { index: null });
+          return { filled: 0, skipped: 1 };
+        }
+        return {};
+      } });
+    flow = await f.detect();
+    await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false, aiAssist: true }, flow.sender);
+    await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0'] }, flow.sender);
+  }
+  let f, flow;
+  f = fixture({ pageHandler: async message => {
+    if (message.type === 'PREPARE_FIELDS') return { fields: [{ id: 'F0', label: '姓名', componentType: 'native-input' }] };
+    if (message.type === 'APPLY_FIELDS') {
+      await assert.rejects(f.controller.handle({ type: 'RESOLVE_OPTION', scanToken: flow.scanToken, fieldId: 'F0', options: ['候选'], timeoutMs: 500 }, page));
+      return { filled: 0, skipped: 1 };
+    }
+    return {};
+  } });
+  flow = await f.detect();
+  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false, aiAssist: false, aiReview: true }, flow.sender);
+  await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0'] }, flow.sender);
+  assert.equal(f.requests.length, 1);
+});
+
 test('网页及伪装本地页面不能读取资料、设置接口、启动检测、调用 API 或确认', async () => {
   const f = fixture();
   for (const sender of [page, { ...options, id: 'other' }, { ...page, url: 'file:///options/options.html' }, { ...page, url: 'https://jobs.example/options/options.html' }]) {
@@ -257,7 +323,7 @@ test('明确开启 AI 辅助才上传所选资料和对应已有值，并校对�
     return modelResponse({ reviews: data.fields.map(field => ({ fieldId: field.id, status: field.id === 'F0' ? 'warning' : 'ok', reason: '演示校对结果' })) });
   } });
   const flow = await f.detect();
-  const preview = await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0', 'S1'], aiAssist: true, overwrite: false }, flow.sender);
+  const preview = await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0', 'S1'], aiAssist: true, aiReview: true, overwrite: false }, flow.sender);
   assert.equal(preview.reviews[0].status, 'warning'); assert.equal(f.requests.length, 2);
   assert.ok(f.requests[0].init.body.includes('PRIVATE_NAME_876'));
   assert.ok(f.requests[1].init.body.includes('PRIVATE_OLD_NAME'));
@@ -281,7 +347,7 @@ test('AI 填写后校对失败仍准确报告已填写数量，不把模型建�
     return modelResponse({ reviews: [{ fieldId: 'F0', status: 'warning', reason: '修改', value: 'MODEL_INVENTED' }] });
   } });
   const flow = await f.detect();
-  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], aiAssist: true, overwrite: false }, flow.sender);
+  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], aiAssist: true, aiReview: true, overwrite: false }, flow.sender);
   const result = await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0'] }, flow.sender);
   assert.equal(result.filled, 1); assert.ok(result.reviewError); assert.equal(result.readback, undefined);
   assert.equal(basic.list.querySelector('input').value, 'PRIVATE_NAME_876');
@@ -291,7 +357,7 @@ test('未经确认不能自动添加或读已有值，非布尔辅助开关被�
   const f = fixture();
   for (const type of ['ENSURE_RECORDS', 'READ_VALUES', 'CHANGE_MAPPING']) await assert.rejects(f.controller.handle({ type }, page));
   const flow = await f.detect();
-  for (const flag of ['aiAssist', 'autoAdd', 'relaxed']) await assert.rejects(f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false, [flag]: 'true' }, flow.sender));
+  for (const flag of ['aiAssist', 'aiReview', 'autoAdd', 'relaxed']) await assert.rejects(f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false, [flag]: 'true' }, flow.sender));
   assert.equal(f.requests.length, 0); assert.equal(f.outgoing.some(item => item.message?.type === 'ENSURE_RECORDS'), false);
 });
 
@@ -464,7 +530,7 @@ test('填写后发现网页只接受月份，AI校对使用相同的年月精度
     return request.phase ? modelResponse({ reviews: [{ fieldId: 'F0', status: 'ok', reason: '演示校对' }] }) : modelResponse({ mappings: [{ fieldId: 'F0', sourceId: 'S0' }] });
   } });
   const flow = await f.detect();
-  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false, aiAssist: true }, flow.sender);
+  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0'], overwrite: false, aiAssist: true, aiReview: true }, flow.sender);
   await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0'] }, flow.sender);
   const request = JSON.parse(JSON.parse(f.requests.at(-1).init.body).messages[1].content);
   assert.equal(request.fields[0].datePrecision, 'month');

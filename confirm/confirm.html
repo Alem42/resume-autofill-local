@@ -5,7 +5,7 @@
   <h1>检测到简历表单</h1>
   <p>是否允许填写这个页面？请核对地址，并选择本次允许使用的资料。</p>
   <p id="target-site" class="site"></p>
-  <p class="notice">先确认资料范围，再预览具体字段。默认只发送字段描述与资料项名称。仅在你主动开启 AI 辅助校对后，才会发送本次勾选的资料值及对应网页字段的已有值 / 填写结果。确认写入后，网站可以读取或自动保存填写内容。</p>
+  <p class="notice">先确认资料范围，再预览具体字段。默认发送字段描述、可选项文字与资料项名称。开启 AI 辅助后允许发送所选资料值，并在点选前判断候选。额外开启内容校对才发送对应字段的已有值 / 填写结果。确认写入后，网站可以读取或自动保存填写内容。</p>
   <section id="selection" class="card" hidden>
     <h2>本次允许填写的资料</h2>
     <div class="actions"><button id="select-all" type="button">全选资料</button><button id="select-none" type="button">全部取消</button></div>
@@ -13,7 +13,9 @@
     <p id="record-summary" class="notice"></p>
     <label class="check-row"><input id="relaxed" type="checkbox" checked><span>尽量填写，允许模糊匹配<small class="value">默认开启。区块、条目或措辞不明确的候选仍进入预览并默认勾选，AI 的疑点也保留供你审核。请逐项检查后再确认。取消勾选可使用严格模式。</small></span></label>
     <label class="check-row"><input id="auto-add" type="checkbox" checked><span>自动补足缺少的经历条目<small class="value">确认后按所选资料数量点击明确的“添加教育 / 项目 / 实习 / 获奖”等按钮，只创建空表单。不点击保存、上传或投递；取消不会移除已添加的空条目。</small></span></label>
-    <label class="check-row"><input id="ai-assist" type="checkbox"><span>允许发送所选资料值，启用 AI 辅助判断与校对<small class="value">默认关闭。勾选后会将本次允许的资料值、对应字段的已有值及填写后读回的结果发送给 DeepSeek，以理解不同网站的措辞。会增加 API 调用和费用；判断仅供参考，不会编造或改写经历。</small></span></label>
+    <label class="check-row"><input id="ai-assist" type="checkbox"><span>AI 语义匹配与下拉选项辅助<small class="value">允许发送本次所选资料值；本机无法确定选项时，将当前字段、目标值和候选文字交给 DeepSeek，在点击前判断。单个字段最多处理 5 秒，超时跳过，不反复重试。</small></span></label>
+    <label class="check-row"><input id="ai-review" type="checkbox"><span>额外进行填写前后内容校对<small class="value">需要同时开启 AI 辅助。额外发送对应网页字段的已有值和填写结果，会增加等待时间。默认关闭，不影响下拉选项辅助。</small></span></label>
+    <p class="muted">语种、熟练度、考试名称、分数分别匹配；熟练度优先选择最高可用等级。考试及成绩使用设置页资料，不会复制到其他语言栏。</p>
     <label class="check-row"><input id="overwrite" type="checkbox"><span>允许覆盖已有内容<small class="value">默认保留已有值。AI 校对可指出差异，但不会擅自覆盖。</small></span></label>
     <div class="actions"><button id="match" class="primary" type="button">确认资料范围，准备表单并匹配</button></div>
   </section>

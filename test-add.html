@@ -207,9 +207,11 @@
       <div class="bili-form-flex ant-row ant-form-item"><label>获奖内容</label><textarea name="awardDescription"></textarea></div>`;
 
     const LANGUAGE_TEMPLATE = `
-      <div class="bili-form-flex ant-row ant-form-item"><label>语言类型</label><input type="text" name="language" placeholder="请输入语言" class="ant-input"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>语言类型</label><select name="language"><option value="">请选择语种</option><option value="en">English</option><option value="zh">中文</option><option value="ja">日语</option></select></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>熟练程度</label><select name="proficiency"><option value="">请选择熟练程度</option><option>一般</option><option>熟练</option><option>精通</option></select></div>
       <div class="bili-form-flex ant-row ant-form-item"><label>考试名称</label><input name="exam"></div>
-      <div class="bili-form-flex ant-row ant-form-item"><label>考试成绩</label><input name="score"></div>`;
+      <div class="bili-form-flex ant-row ant-form-item"><label>考试成绩</label><input name="score"></div>
+      <div class="bili-form-flex ant-row ant-form-item"><label>语言证书</label><textarea name="certificateSummary"></textarea></div>`;
 
     let blockSeq = 0;
     function addBlock(listId, template) {

@@ -83,7 +83,8 @@ function preview(data) {
   for (const item of data.addReports || []) report.append(element('p', item.message ? 'review-note warning' : 'muted',
     `${item.title}：新增 ${item.added} 条。${item.message}`));
   if (data.relaxed) report.append(element('p', 'notice', '模糊匹配已开启：候选和 AI 疑点默认勾选，请逐项审核并取消不需要的字段。已有内容仍按覆盖选项处理。'));
-  if (data.aiAssist) report.append(element('p', 'notice', data.reviewError
+  if (data.aiAssist) report.append(element('p', 'notice', '已开启 AI 下拉辅助：仅在本机无法确定候选时请求语义判断；单字段超过 5 秒会跳过。'));
+  if (data.aiReview) report.append(element('p', 'notice', data.reviewError
     ? `AI 校对未完成：${data.reviewError}。请人工核对后决定是否填写。`
     : data.relaxed ? 'AI 校对意见供你审核，不会取消候选。确认后还会校对实际填写结果。' : '有疑点或不确定的字段默认不选；已有内容默认保留。确认后还会校对实际填写结果。'));
   const unmatched = document.getElementById('unmatched'); unmatched.replaceChildren();
@@ -94,7 +95,7 @@ function preview(data) {
     sourceChooser(field.id, row, mapping => { root.append(mappingRow(mapping)); row.remove(); });
     unmatched.append(row);
   }
-  document.getElementById('apply').textContent = data.aiAssist ? '确认填写所选字段并校对结果' : '确认填写所选字段';
+  document.getElementById('apply').textContent = data.aiReview ? '确认填写所选字段并校对结果' : '确认填写所选字段';
   status(`匹配到 ${data.mappings.length} 个字段，另有 ${data.unmatched?.length || 0} 个未匹配。请检查后确认。`);
 }
 async function refresh() {
@@ -129,7 +130,7 @@ async function refresh() {
     document.getElementById('preview').hidden = true;
     const stages = { adding: '正在补足空的经历条目，尚未写入个人资料…', matching: '正在按区块和条目匹配字段…',
       reviewing: '正在校对预览与已有内容，尚未写入个人资料…', auditing: '已经写入网页，正在校对实际填写结果…' };
-    status(data.status === 'applying' ? '正在填写网页…' : (stages[data.progress?.stage] || '正在匹配字段…')
+    status(data.status === 'applying' ? `正在填写网页… ${data.progress?.done || 0} / ${data.progress?.total || 0}；单个字段最多 5 秒` : (stages[data.progress?.stage] || '正在匹配字段…')
       + (data.progress?.total ? ` ${data.progress.done} / ${data.progress.total}` : ''));
     clearTimeout(polling);
     polling = setTimeout(() => refresh().catch(error => status(error.message, true)), 1000);
@@ -150,15 +151,16 @@ function finish(result) {
   }
   const skipReasons = { existing_value: '已有内容，本次保留', field_changed: '字段结构已变化，请重新检测',
     selection_not_committed: '组件未确认选中，请检查下拉候选或日期', component_refused: '组件未接受填写事件',
-    range_requires_both: '共享日期范围需要同时确认开始和结束两个字段' };
+    range_requires_both: '共享日期范围需要同时确认开始和结束两个字段', field_timeout: '超过 5 秒，已跳过，请手动填写' };
   for (const item of result.outcomes || []) if (item.status === 'skipped') {
     const mapping = currentData.mappings?.find(mapping => mapping.fieldId === item.fieldId);
     reviews.append(element('p', 'review-note warning', `${mapping?.fieldLabel || item.fieldId}：${skipReasons[item.reason] || '未完成填写，请检查网页'}`));
     document.getElementById('after-review').hidden = false;
   }
-  for (const item of result.outcomes || []) if (item.status === 'filled' && ['alias', 'similar'].includes(item.optionMatch)) {
+  for (const item of result.outcomes || []) if (item.status === 'filled' && ['alias', 'similar', 'ai', 'preference'].includes(item.optionMatch)) {
     const mapping = currentData.mappings?.find(mapping => mapping.fieldId === item.fieldId);
-    reviews.append(element('p', 'review-note warning', `${mapping?.fieldLabel || item.fieldId}：已选择${item.optionMatch === 'alias' ? '名称变体' : '近似'}候选，请核对网页实际选项。`));
+    const methods = { alias: '名称变体', similar: '近似', ai: 'AI 判断的', preference: '最高熟练等级' };
+    reviews.append(element('p', 'review-note warning', `${mapping?.fieldLabel || item.fieldId}：已选择${methods[item.optionMatch]}候选，请核对网页实际选项。`));
     document.getElementById('after-review').hidden = false;
   }
   status(`已填写 ${result.filled} 个字段，跳过 ${result.skipped} 个。请回到网页检查并自行提交。`);
@@ -176,6 +178,7 @@ onClick('match', async () => {
   try {
     await send({ type: 'MATCH_FIELDS', requestId, sourceIds, overwrite: document.getElementById('overwrite').checked,
       autoAdd: document.getElementById('auto-add').checked, aiAssist: document.getElementById('ai-assist').checked,
+      aiReview: document.getElementById('ai-review').checked,
       relaxed: document.getElementById('relaxed').checked });
     clearTimeout(polling);
     if (state !== 'preview') { state = ''; await refresh(); }
@@ -187,7 +190,7 @@ onClick('match', async () => {
 });
 onClick('apply', async () => {
   const fieldIds = checked('mappings');
-  if (!fieldIds.length && !currentData.aiAssist) throw new Error('请选择需要填写的字段');
+  if (!fieldIds.length && !currentData.aiReview) throw new Error('请选择需要填写的字段');
   state = 'applying'; document.getElementById('preview').hidden = true;
   status(fieldIds.length ? '正在填写网页…' : '只校对已有内容，不写入字段…');
   polling = setTimeout(() => refresh().catch(error => status(error.message, true)), 500);

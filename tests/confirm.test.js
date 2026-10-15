@@ -67,7 +67,7 @@ test('确认预览默认不选疑点、未知结果和已有内容，并可展�
 });
 
 test('校对失败时所有预览项默认不选，需要人工选择或明确只校对已有内容', async () => {
-  const f = await confirmation({ status: 'preview', mappings: [mapping('F0')], aiAssist: true, overwrite: false, reviewError: '接口超时' });
+  const f = await confirmation({ status: 'preview', mappings: [mapping('F0')], aiAssist: true, aiReview: true, overwrite: false, reviewError: '接口超时' });
   assert.equal(f.nodes.get('mappings').querySelector('input').checked, false);
   assert.ok(f.nodes.get('preparation-report').textContent.includes('接口超时'));
 });
@@ -77,11 +77,13 @@ test('AI 上传默认关闭，第一次确认只传递用户实际选择的布�
     const f = await confirmation({ status: 'detected', sources: profileSources(normalizeProfile({ basic: { name: 'LOCAL_DEMO' } })) });
     assert.equal(f.nodes.get('ai-assist').checked, false); assert.equal(f.nodes.get('auto-add').checked, true);
     assert.equal(f.nodes.get('relaxed').checked, true);
+    assert.equal(f.nodes.get('ai-review').checked, false);
     f.nodes.get('ai-assist').checked = assisted;
     await f.fire(f.nodes.get('match'), 'click');
     const message = f.requests.find(request => request.type === 'MATCH_FIELDS');
     assert.equal(message.aiAssist, assisted); assert.equal(message.autoAdd, true); assert.equal(message.overwrite, false);
     assert.equal(message.relaxed, true);
+    assert.equal(message.aiReview, false);
     assert.deepEqual(message.sourceIds, ['S0']);
   }
 });

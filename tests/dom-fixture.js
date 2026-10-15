@@ -71,11 +71,21 @@ export function domFixture() {
     }
   }
   class Textarea extends Input {}
+  class Option extends Element {
+    get value() { return this.attrs.value ?? this.textContent; }
+    set value(value) { this.attrs.value = String(value); }
+  }
+  class Select extends Element {
+    get options() { return this.querySelectorAll('option'); }
+    get selectedIndex() { return this.options.findIndex(option => option.value === this.value); }
+    get value() { return this._selection ?? this.options[0]?.value ?? ''; }
+    set value(value) { this._selection = this.options.some(option => option.value === String(value)) ? String(value) : ''; }
+  }
   doc = { title: '校招简历', querySelectorAll: selector => doc.body.querySelectorAll(selector),
     querySelector: selector => doc.body.querySelector(selector) };
   doc.body = new Element('body'); doc.documentElement = doc.body; doc.activeElement = doc.body;
-  const node = (tag, attrs = {}, text = '') => ['input', 'textarea'].includes(tag)
-    ? new (tag === 'textarea' ? Textarea : Input)(tag, attrs, text) : new Element(tag, attrs, text);
+  const node = (tag, attrs = {}, text = '') => new (tag === 'input' ? Input : tag === 'textarea' ? Textarea
+    : tag === 'select' ? Select : tag === 'option' ? Option : Element)(tag, attrs, text);
   const context = vm.createContext({ document: doc, location: { href: 'https://jobs.example/resume' },
     window: { getComputedStyle: el => ({ display: el.hidden ? 'none' : 'block', visibility: 'visible', opacity: '1' }) },
     CSS: { escape: value => value }, Event: class { constructor(type) { this.type = type; } },

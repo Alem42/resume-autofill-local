@@ -4,7 +4,7 @@
   const rules = globalThis.__resumeSemantics;
   const HEADINGS = 'h1,h2,h3,h4,h5,h6,legend,header,strong,[role="heading"],[class*="title"],[class*="Title"],[class*="header"],[class*="Header"],div,span,p';
   const RECORDS = '[data-record],fieldset,[class*="form-multiple"],[class*="experience-item"],[class*="record-item"],[class*="education-item"],[class*="project-item"],[class*="experience-card"]';
-  const CONTROLS = 'button,[role="button"],[onclick],[class*="add"],[class*="Add"],a';
+  const CONTROLS = 'button,[role="button"],[onclick],[class*="add"],[class*="Add"],[class*="plus"],[aria-label],[title],a,span,div';
   const textOf = (node, hooks) => hooks.text(node).replace(/\s+/g, ' ').trim().slice(0, 100);
   function headingsIn(root, hooks) {
     if (hooks.headingCache?.has(root)) return hooks.headingCache.get(root);
@@ -27,7 +27,14 @@
       const kinds = new Set(known.map(item => item.section));
       if (kinds.size === 1) return { root: node, section: known[0].section, label: textOf(known[0].heading, hooks) };
       // Do not turn an ancestor containing several sections into a single category.
-      if (kinds.size > 1) continue;
+      if (kinds.size > 1) {
+        // Flat forms use sibling headings followed by an add button / entry list, with no section wrapper.
+        const preceding = known.filter(item => item.heading.compareDocumentPosition(el) & 4)
+          .filter(item => !item.heading.contains(el));
+        const closest = preceding.at(-1);
+        if (closest) return { root: node, boundary: closest.heading, section: closest.section, label: textOf(closest.heading, hooks) };
+        continue;
+      }
       const named = rules.section(`${node.id || ''} ${typeof node.className === 'string' ? node.className : ''}`);
       if (named !== 'unknown' && node.querySelectorAll('input,select,textarea,[contenteditable]').length > 1) {
         return { root: node, section: named, label: rules.titles[named] };
@@ -56,19 +63,21 @@
       if (['other', 'unknown'].includes(context.section) && inferred === 'basic') {
         context.section = 'basic'; context.label = rules.titles.basic;
       }
-      if (context.section === 'basic' && ['other', 'jobIntention'].includes(inferred)) {
+      if (context.section === 'basic' && ['other', 'jobIntention', 'languageCertificates'].includes(inferred)) {
         context.section = inferred; context.label = rules.titles[inferred];
       }
       if (!roots.has(context.root)) roots.set(context.root, new Map());
       const groups = roots.get(context.root);
-      if (!groups.has(context.section)) groups.set(context.section, { ...context, elements: [] });
-      groups.get(context.section).elements.push(el);
+      const key = context.boundary || context.section;
+      if (!groups.has(key)) groups.set(key, { ...context, elements: [] });
+      groups.get(key).elements.push(el);
     }
     const offsets = new Map();
     for (const groups of roots.values()) for (const group of groups.values()) {
       const repeated = rules.repeated.includes(group.section);
       const records = repeated ? [...group.root.querySelectorAll(RECORDS)].filter(node => node !== group.root
-        && hooks.visible(node) && scope(node, hooks).root === group.root) : [];
+        && hooks.visible(node) && scope(node, hooks).root === group.root && scope(node, hooks).boundary === group.boundary
+        && scope(node, hooks).section === group.section) : [];
       // Nested record wrappers describe the same entry; keep the innermost wrapper containing fields.
       const distinct = records.filter(node => !records.some(other => other !== node && node.contains(other)));
       for (const el of group.elements) {
@@ -110,21 +119,29 @@
     return { fields: result, counts: Object.fromEntries(offsets) };
   }
   function addControl(el, hooks) {
+    const raw = (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim();
+    if (raw.length > 60 || !/^[+＋✚]|^(?:添加|新增|增加|新建|继续添加|add\b)/i.test(raw)) return null;
     if (!el?.isConnected || el.ownerDocument !== document || el.disabled || !hooks.visible(el)
       || el.closest('[inert],[aria-hidden="true"],nav,[role="navigation"]') || el.getAttribute('aria-disabled') === 'true') return null;
+    // A child span must not bypass a submit button or navigation link rejected below.
+    const outerButton = el.closest('button');
+    if (outerButton && outerButton !== el) return null;
+    const outerLink = el.closest('a[href]');
+    if (outerLink && outerLink !== el) return null;
+    if (el.querySelector('input,select,textarea,button,[role="button"],a[href]')) return null;
     if (el.tagName === 'INPUT') return null;
     if (el.tagName === 'A' && el.getAttribute('href') && !/^(#|javascript:void\(0\);?)$/i.test(el.getAttribute('href').trim())) return null;
     if (el.tagName === 'BUTTON' && (el.type === 'submit' || el.type === 'reset'
       || (!el.getAttribute('type') && el.closest('form')))) return null;
-    const label = textOf(el, hooks);
+    const label = (el.getAttribute('aria-label') || el.getAttribute('title') || textOf(el, hooks)).trim();
     if (!label || label.length > 60 || /删除|移除|保存|提交|上传|投递|申请|登录|验证码|支付|delete|remove|save|submit|upload|apply|login|send|pay/i.test(label)) return null;
     const plain = label.replace(/^[+＋✚\s]+/, '');
-    if (!/^(添加|新增|增加|新建|add\b)/i.test(plain)) return null;
+    if (!/^(添加|新增|增加|新建|继续添加|add\b)/i.test(plain) && !/^[+＋✚]$/.test(label)) return null;
     const explicit = rules.section(plain);
     const context = scope(el, hooks);
     const section = explicit === 'unknown' ? context.section : explicit;
     if (!rules.repeated.includes(section) || context.root === document.body || context.section !== section) return null;
-    return { element: el, label, section, root: context.root };
+    return { element: el, label, section, root: context.root, boundary: context.boundary };
   }
   function controls(hooks) {
     hooks = { ...hooks, headingCache: new Map() };
@@ -152,7 +169,7 @@
       while (before < desired && clicks < 40) {
         hooks.check();
         if (!bound.root.isConnected) { report.message = '经历区块已被替换，请重新检测。'; break; }
-        const current = controls(hooks).filter(control => control.section === section && control.root === bound.root);
+        const current = controls(hooks).filter(control => control.section === section && control.root === bound.root && control.boundary === bound.boundary);
         if (current.length !== 1) { report.message = '添加入口发生变化，请手动补足。'; break; }
         const button = current[0];
         if (button.label !== bound.label) { report.message = '添加按钮文字发生变化，已停止。'; break; }
@@ -160,7 +177,7 @@
         button.element.click();
         clicks++;
         let after = before;
-        for (let wait = 0; wait < 20 && after <= before; wait++) {
+        for (let wait = 0; wait < 50 && after <= before; wait++) {
           await hooks.sleep(100);
           after = inspect(hooks.elements(), hooks).counts[section] || 0;
         }

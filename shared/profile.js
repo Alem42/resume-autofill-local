@@ -74,7 +74,7 @@ export const PROFILE_SCHEMA = {
     inventors: '发明人及排序', date: '申请 / 授权时间', description: '专利内容', url: '专利链接'
   } },
   languageCertificates: { title: '语言考试', multiple: true, fields: {
-    language: '语种', exam: '考试名称（CET / IELTS 等）', level: '语言等级', score: '考试成绩',
+    language: '语种', proficiency: '熟练程度（默认精通，选择最高可用等级）', exam: '考试名称（CET / IELTS 等）', level: '考试 / 证书等级', score: '考试成绩',
     date: '考试时间', expiryDate: '有效期至', description: '语言能力说明'
   } },
   professionalCertificates: { title: '资格证书', multiple: true, fields: {
@@ -209,6 +209,26 @@ export function profileSources(profile) {
     }
   }
   for (const [key, label] of Object.entries(TEXT_FIELDS)) add(key, label, profile[key]);
+  // Derive separate facts from an existing exam description; never copy a certificate into every language field.
+  // Append derived sources to preserve the identifiers of the user's original fields.
+  const records = profile.languageCertificates.length ? profile.languageCertificates : profile.languages ? [{ description: profile.languages }] : [];
+  records.forEach((record, index) => {
+    const text = [record.exam, record.score, record.description, record.language].filter(Boolean).join(' ');
+    const exam = /ielts|雅思/i.test(text) ? 'IELTS' : /toefl|托福/i.test(text) ? 'TOEFL'
+      : /cet[\s-]?6|英语六级/i.test(text) ? 'CET-6' : /cet[\s-]?4|英语四级/i.test(text) ? 'CET-4' : record.exam || '';
+    const score = record.score || (exam && /(?:ielts|雅思|toefl|托福|cet[\s-]?[46])\s*[:：]?\s*(\d+(?:\.\d+)?)/i.exec(text)?.[1]) || '';
+    const language = record.language && !/ielts|toefl|cet|雅思|托福|英语[四六]级/i.test(record.language) ? record.language : /IELTS|TOEFL|CET-[46]/i.test(exam) ? '英语' : '';
+    const values = { language, proficiency: record.proficiency || (language ? '精通' : ''), exam, score,
+      certificateSummary: [exam, score].filter(Boolean).join(' ') || record.description || '' };
+    for (const [fieldKey, value] of Object.entries(values)) {
+      if (!value) continue;
+      const existing = sources.find(source => source.section === 'languageCertificates' && source.recordIndex === index && source.fieldKey === fieldKey);
+      if (existing) { if (['language', 'exam'].includes(fieldKey)) existing.value = value; continue; }
+      sources.push({ id: `S${sources.length}`, key: `languageCertificates.${index}.${fieldKey}`,
+        label: `第 ${index + 1} 条语言 / 考试 / ${fieldKey === 'certificateSummary' ? '考试及成绩' : PROFILE_SCHEMA.languageCertificates.fields[fieldKey]}`,
+        value, section: 'languageCertificates', fieldKey, recordIndex: index });
+    }
+  });
   return sources;
 }
 
@@ -239,7 +259,9 @@ export function recordTargets(sources) {
 }
 
 export function sourceConflict(field, source, { manualUnknown = false } = {}) {
-  const section = field.section || semantics.inferSection([field.label, field.name, field.placeholder].join(' '));
+  const fieldKind = field.intent || semantics.fieldKind(field.label || field.name || field.placeholder, field.section);
+  const languageField = ['language', 'proficiency', 'exam', 'score', 'certificateSummary'].includes(fieldKind);
+  const section = languageField ? 'languageCertificates' : field.section || semantics.inferSection([field.label, field.name, field.placeholder].join(' '));
   if (section === 'employment') {
     if (!['work', 'internships'].includes(source.section)) return 'section_mismatch';
   } else if (section === 'qualifications') {
@@ -252,7 +274,7 @@ export function sourceConflict(field, source, { manualUnknown = false } = {}) {
     const index = section === 'employment' ? source.employmentIndex : section === 'qualifications' ? source.qualificationsIndex : source.slotIndex ?? source.recordIndex;
     if (field.recordIndex !== index && !(section === 'unknown' && manualUnknown)) return 'record_mismatch';
   }
-  const kind = semantics.fieldKind(field.label || field.name || field.placeholder, section);
+  const kind = field.intent || semantics.fieldKind(field.label || field.name || field.placeholder, section);
   if (kind === 'degree' && section === 'basic' && source.fieldKey === 'highestDegree') return null;
   if (kind === 'expectedGraduationDate' && source.section === 'education' && source.fieldKey === 'endDate') {
     return /^\d{4}[-/.]\d{1,2}(?:[-/.]\d{1,2})?$/.test(source.value) ? null : 'graduation_month_required';
@@ -260,15 +282,22 @@ export function sourceConflict(field, source, { manualUnknown = false } = {}) {
   return !kind || source.fieldKey === kind ? null : 'field_mismatch';
 }
 export function sourceAllowed(field, source, options) {
+  if (languageConflict(field, source)) return false;
   if (options?.relaxed === true) return true;
   return sourceConflict(field, source, options) === null;
+}
+
+function languageConflict(field, source) {
+  const kind = field.intent || semantics.fieldKind(field.label || field.name || field.placeholder, field.section);
+  if (!['language', 'proficiency', 'exam', 'score', 'certificateSummary'].includes(kind)) return false;
+  return source.section !== 'languageCertificates' || source.fieldKey !== kind;
 }
 
 export function localMatchPairs(fields, sources) {
   const cleanLabel = value => String(value || '').replace(/（[^）]*）|\([^)]*\)/g, '').replace(/[\s*＊：:]/g, '')
     .replace(/^(?:请输入|请选择|请填写)/, '').toLowerCase();
   return fields.flatMap(field => {
-    const kind = semantics.fieldKind(field.label || field.name || field.placeholder, field.section);
+    const kind = field.intent || semantics.fieldKind(field.label || field.name || field.placeholder, field.section);
     const candidates = sources.filter(source => sourceAllowed(field, source) && (kind
       ? source.fieldKey === kind || (kind === 'degree' && field.section === 'basic' && source.fieldKey === 'highestDegree')
       : cleanLabel(field.label || field.placeholder || field.name) === cleanLabel(PROFILE_SCHEMA[source.section]?.fields[source.fieldKey] || TEXT_FIELDS[source.fieldKey])));
@@ -279,8 +308,9 @@ export function localMatchPairs(fields, sources) {
 export function fieldDiagnostic(field) {
   return { id: field.id, section: field.section, recordIndex: field.recordIndex,
     componentType: field.componentType, hasValue: field.hasValue,
-    kind: semantics.fieldKind(field.label || field.name || field.placeholder, field.section),
-    ...(['month', 'day', 'unknown'].includes(field.datePrecision) ? { datePrecision: field.datePrecision } : {}) };
+    kind: field.intent || semantics.fieldKind(field.label || field.name || field.placeholder, field.section),
+    ...(['year', 'month', 'day', 'unknown'].includes(field.datePrecision) ? { datePrecision: field.datePrecision } : {}),
+    ...(['year', 'month', 'day'].includes(field.datePart) ? { datePart: field.datePart } : {}) };
 }
 export function sourceDiagnostic(source) {
   return { id: source.id, section: source.section, recordIndex: source.slotIndex ?? source.recordIndex,
@@ -323,7 +353,10 @@ export function normalizeFields(fields) {
     const recordIndex = Number.isInteger(field.recordIndex) && field.recordIndex >= 0 && field.recordIndex < MAX_ENTRIES * 2 ? field.recordIndex : null;
     return { id: field.id, label: text('label', 80), placeholder: text('placeholder', 100), name: text('name', 80), componentType: field.componentType,
       section, sectionLabel: text('sectionLabel', 100), recordIndex, hasValue: field.hasValue === true,
-      ...(['month', 'day', 'unknown'].includes(field.datePrecision) ? { datePrecision: field.datePrecision } : {}) };
+      ...(['year', 'month', 'day', 'unknown'].includes(field.datePrecision) ? { datePrecision: field.datePrecision } : {}),
+      ...(['year', 'month', 'day'].includes(field.datePart) ? { datePart: field.datePart } : {}),
+      ...(['language', 'proficiency', 'exam', 'score', 'certificateSummary'].includes(field.intent) ? { intent: field.intent } : {}),
+      ...(Array.isArray(field.options) ? { options: field.options.filter(item => typeof item === 'string').slice(0, 80).map(item => item.slice(0, 150)) } : {}) };
   });
 }
 
@@ -343,16 +376,23 @@ export function validateMatches(reply, fields, sources, { manualUnknown = false,
     const field = fieldMap.get(mapping.fieldId);
     const source = sourceMap.get(mapping.sourceId);
     if (!field || !source || seen.has(field.id)) throw new Error('模型引用了未授权或重复的资料项');
+    if (languageConflict(field, source)) {
+      if (relaxed) { seen.add(field.id); return null; }
+      throw new MappingValidationError(field, source, 'field_mismatch');
+    }
     const conflict = sourceConflict(field, source, { manualUnknown });
     if (conflict && !relaxed) throw new MappingValidationError(field, source, conflict);
     seen.add(field.id);
     return { fieldId: field.id, sourceId: source.id, fieldLabel: field.label || field.placeholder || field.name || field.id,
       section: field.section, recordIndex: field.recordIndex, hasValue: field.hasValue,
       ...(conflict ? { needsReview: true, warning: diagnosticReason({ reason: conflict, field: fieldDiagnostic(field), source: sourceDiagnostic(source) }), conflict } : {}),
-      sourceLabel: source.label, value: field.datePrecision === 'month' && /^\d{4}[-/.]\d{1,2}/.test(source.value)
+      sourceLabel: source.label, value: field.datePart && /^(\d{4})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?$/.test(source.value)
+        ? ((date) => String(field.datePart === 'year' ? date[1] : field.datePart === 'month' ? +date[2] : +(date[3] || 1)))(/^(\d{4})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?$/.exec(source.value))
+        : field.datePrecision === 'year' && /^\d{4}/.test(source.value) ? source.value.slice(0, 4)
+        : field.datePrecision === 'month' && /^\d{4}[-/.]\d{1,2}/.test(source.value)
         ? source.value.replace(/^(\d{4})[-/.](\d{1,2}).*$/, (_, year, month) => `${year}-${month.padStart(2, '0')}`) : source.value,
       componentType: field.componentType };
-  });
+  }).filter(Boolean);
 }
 
 export function validateReviews(reply, fields) {

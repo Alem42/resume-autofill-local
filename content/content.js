@@ -12,14 +12,39 @@
   let debounceTimer = null;
   const fieldRegistry = new Map();
   const MAX_FIELDS = 400;
-  const CONTENT_VERSION = '2.4.0';
+  const CONTENT_VERSION = '2.5.0';
+  const FIELD_TIMEOUT_MS = 5000;
+  const clockNow = () => globalThis.performance?.now() ?? Date.now();
+  let fieldOperation = null;
+  let optionAssistance = false;
   const sectionAgent = globalThis.__resumeSections;
   const controlRules = globalThis.__resumeControls;
   const componentControls = controlRules.create({ visible: isVisible, sleep, label: getLabelText, write: writeSearchValue,
-    close: closeOpenPanel, check() { if (!activeScanToken) throw new Error('填写已停止'); } });
+    close: closeOpenPanel, check: checkOperation, resolveOption: resolveOption, canResolve: () => optionAssistance });
   let fieldContexts = new Map();
   let includeExisting = false;
   const INPUT_TYPES = new Set(['text', 'search', 'email', 'tel', 'url', 'number', 'date', 'month', 'week', 'time', 'datetime-local', 'radio']);
+
+  function checkOperation() {
+    if (!activeScanToken) throw new Error('填写已停止');
+    if (fieldOperation && clockNow() >= fieldOperation.deadline) {
+      const error = new Error('单个字段已超过 5 秒'); error.code = 'FIELD_TIMEOUT'; throw error;
+    }
+  }
+  async function resolveOption(el, options) {
+    if (!optionAssistance || !fieldOperation || !options.length) return null;
+    checkOperation();
+    const remainingMs = fieldOperation.deadline - clockNow() - 350;
+    if (remainingMs < 250) return null;
+    let timer;
+    const response = await Promise.race([
+      chrome.runtime.sendMessage({ type: 'RESOLVE_OPTION', scanToken: activeScanToken,
+        fieldId: fieldOperation.fieldId, options, timeoutMs: Math.min(2500, remainingMs) }),
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), Math.min(2600, remainingMs)); })
+    ]).finally(() => clearTimeout(timer));
+    checkOperation();
+    return Number.isInteger(response?.index) ? response.index : null;
+  }
 
   function radioInfo(el) {
     if (el.tagName !== 'INPUT' || el.type !== 'radio') return null;
@@ -55,6 +80,10 @@
   }
   function fieldHasValue(el) {
     if (el.type === 'radio') return Boolean(radioInfo(el)?.options.some(option => option.checked));
+    if (el.tagName === 'SELECT') {
+      const option = el.options?.[el.selectedIndex];
+      if (option && (option.disabled || !option.value || /^(请选择|选择|please select|select\b)/i.test(option.textContent.trim()))) return false;
+    }
     if (typeof el.value === 'string' && el.value.trim()) return true;
     const inner = el.querySelector('input:not([type="hidden"]), textarea');
     if (inner && inner.value.trim()) return true;
@@ -135,6 +164,7 @@
   // \b 会漏掉这些模式。用宽松子串匹配，但必须与 readonly / date 占位符 / picker-addon
   // 子元素联合使用，避免将普通输入框误判为日期选择器（detectComponentType 做最终裁决）
   function hasDatepickerBehavior(el) {
+    if (['data-format', 'data-date-format', 'format'].some(key => /y{4}/i.test(el.getAttribute(key) || ''))) return true;
     const cls = (typeof el.className === 'string') ? el.className : '';
     // 自身类名含强日期信号（不用裸 date/picker，避免 candidate/updated/select 误判）
     if (/datepicker|date-picker|date_info|calendar|picker-addon|日历|时间选择/i.test(cls)) return true;
@@ -229,7 +259,8 @@
     if (fields.length >= MAX_FIELDS) throw new Error(`页面字段超过 ${MAX_FIELDS} 个，请分区填写`);
     collected.add(el);
 
-    const componentType = detectComponentType(el);
+    const split = splitDateInfo(el);
+    const componentType = split ? el.tagName === 'SELECT' ? 'native-select' : el.readOnly || hasDropdownBehavior(el) ? 'custom-dropdown' : 'native-input' : detectComponentType(el);
     if (componentType === 'unknown') return;
     const field = {
       id: 'F' + fields.length, componentType,
@@ -242,6 +273,8 @@
       ...(componentType === 'custom-datepicker' || ['date', 'month'].includes(el.type) ? { datePrecision: controlRules.datePrecision(el) } : {}),
       ...fieldContexts.get(el)
     };
+    if (split) field.datePart = split.part;
+    if (el.tagName === 'TEXTAREA' && /^(语言能力|语言水平|外语水平)$/.test(field.label)) field.intent = 'certificateSummary';
 
     // 采集可选项
     if (el.tagName.toLowerCase() === 'select') {
@@ -406,12 +439,36 @@
   }
   function getLabelText(el) {
     if (el.type === 'radio') return radioInfo(el)?.label || '';
+    const split = splitDateInfo(el);
+    if (split) return `${split.label}（${{ year: '年', month: '月', day: '日' }[split.part]}）`;
     const base = getBaseLabelText(el);
     const range = dateRangeInfo(el);
     if (range) return range.index === 0 ? '开始时间' : '结束时间';
     if (base) return base;
     const placeholder = getPlaceholder(el);
     return globalThis.__resumeSemantics.fieldKind(placeholder) ? placeholder.replace(/^(?:请输入|请选择|请填写)/, '') : '';
+  }
+  function splitDateInfo(el) {
+    if (['date', 'month'].includes(el.type)) return null;
+    const unit = value => /year|年份|(?:^|[^月日])年$|^yyyy$/i.test(value) ? 'year'
+      : /month|月份|^月$|^mm$/i.test(value) ? 'month' : /(?:^|_)day|日期中的日|^日$|^dd$/i.test(value) ? 'day' : null;
+    const own = unit([el.name, el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.getAttribute('data-unit')].filter(Boolean).join(' '));
+    for (let root = el.parentElement, depth = 0; root && root !== document.body && depth < 4; root = root.parentElement, depth++) {
+      const parts = [...root.querySelectorAll('input,select')].filter(node => node.type !== 'hidden');
+      if (parts.length > 3) break;
+      if (parts.length < 2 || parts.some(node => ['date', 'month'].includes(node.type))) continue;
+      const caption = root.querySelector('label,legend,[class*="label"],[class*="Label"]');
+      const text = caption ? readLabelText(caption).trim() : root.getAttribute('aria-label') || '';
+      if (!/开始|结束|入学|毕业|入职|离职|出生|start|end|birth|graduation/i.test(text) || /起止|range/i.test(text)) continue;
+      const detected = parts.map(node => unit([node.name, node.getAttribute('aria-label'), node.getAttribute('placeholder'), node.getAttribute('data-unit')].filter(Boolean).join(' ')));
+      if (!detected.includes('year') || !detected.includes('month')) continue;
+      return { part: own || detected[parts.indexOf(el)], label: text.replace(/[：:*＊\s]+$/, '') };
+    }
+    const caption = el.closest('[class*="form-item"],[class*="form-group"],[class*="field-item"]')?.querySelector('label,[class*="label"],[class*="Label"]');
+    const text = caption ? readLabelText(caption).trim() : el.getAttribute('aria-label') || el.name || '';
+    const explicit = own || /年份$/.test(text) && 'year' || /月份$/.test(text) && 'month';
+    if (explicit && /开始|结束|入学|毕业|出生|入职|离职|start|end|birth|graduation/i.test(text)) return { part: explicit, label: text.replace(/[：:*＊\s]+$/, '') };
+    return null;
   }
   function getBaseLabelText(el) {
     if (el.type === 'radio') return radioInfo(el)?.label || '';
@@ -562,14 +619,14 @@
           && range.inputs.every(input => eligibleElement(input) && (allowOverwrite || !fieldHasValue(input)))) {
           pair.forEach(item => handled.add(item.fieldId));
           let response = { filled: false, precisions: [] };
-          try { response = await fillDateRangePair(range.inputs, pair.map(item => String(item.value))); } catch {}
+          try { response = await withinFieldBudget(mapping, el, () => fillDateRangePair(range.inputs, pair.map(item => String(item.value)))); } catch {}
           const success = response.filled;
           pair.forEach((item, index) => {
             const precision = response.precisions[index];
             if (['month', 'day'].includes(precision)) fieldRegistry.get(item.fieldId).datePrecision = precision;
             outcomes.push({ fieldId: item.fieldId, status: success ? 'filled' : 'skipped',
-              ...(success ? {} : { reason: 'selection_not_committed' }),
-              ...(['month', 'day'].includes(precision) ? { datePrecision: precision } : {}) });
+              ...(success ? {} : { reason: response.timeout ? 'field_timeout' : 'selection_not_committed' }),
+              ...(['year', 'month', 'day'].includes(precision) ? { datePrecision: precision } : {}) });
           });
           if (success) { count += 2; range.inputs.forEach(highlightField); }
         } else {
@@ -580,27 +637,40 @@
       }
 
       try {
-        const response = await fillByType(el, value, componentType, mapping.fieldId);
+        const response = await withinFieldBudget(mapping, el, () => fillByType(el, value, componentType, mapping.fieldId));
         const detail = typeof response === 'object' && response ? response : { filled: Boolean(response) };
         const filled = detail.filled;
         if (filled) { highlightField(el); count++; }
         outcomes.push({ fieldId: mapping.fieldId, status: filled ? 'filled' : 'skipped',
-          ...(filled ? {} : { reason: 'selection_not_committed' }),
+          ...(filled ? {} : { reason: detail.timeout ? 'field_timeout' : 'selection_not_committed' }),
           ...(typeof detail.dropdown === 'boolean' ? { dropdownDetected: detail.dropdown } : {}),
-          ...(['exact', 'alias', 'similar'].includes(detail.match) ? { optionMatch: detail.match } : {}),
-          ...(['day', 'month'].includes(detail.precision) ? { datePrecision: detail.precision } : {}) });
-        if (['day', 'month'].includes(detail.precision)) fieldRegistry.get(mapping.fieldId).datePrecision = detail.precision;
+          ...(['exact', 'alias', 'similar', 'ai', 'preference'].includes(detail.match) ? { optionMatch: detail.match } : {}),
+          ...(['year', 'day', 'month'].includes(detail.precision) ? { datePrecision: detail.precision } : {}) });
+        if (['year', 'day', 'month'].includes(detail.precision)) fieldRegistry.get(mapping.fieldId).datePrecision = detail.precision;
       } catch {
         // A component that refuses a synthetic event is counted as skipped.
         outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: 'component_refused' });
       }
       if (onProgress) onProgress(i + 1, total);
+      void chrome.runtime.sendMessage({ type: 'FILL_PROGRESS', scanToken: activeScanToken, done: outcomes.length, total }).catch(() => {});
       await sleep(150);
     }
 
     const result = { filled: count, skipped: total - count, outcomes };
     if (auditFieldIds.length) result.readback = readValues(auditFieldIds);
     return result;
+  }
+
+  async function withinFieldBudget(mapping, el, task) {
+    fieldOperation = { fieldId: mapping.fieldId, deadline: clockNow() + FIELD_TIMEOUT_MS };
+    try { const result = await task(); checkOperation(); return result; }
+    catch (error) {
+      if (error.code !== 'FIELD_TIMEOUT') throw error;
+      // All awaited continuations have unwound. Do not race a live DOM-writing task against a timer.
+      fireCloseEvents(el, el, true);
+      el.blur?.();
+      return { filled: false, timeout: true, precisions: [] };
+    } finally { fieldOperation = null; }
   }
 
   async function fillByType(el, value, componentType, fieldId) {
@@ -655,6 +725,7 @@
   }
 
   function fillNativeInput(el, value) {
+    checkOperation();
     let v = String(value);
     const date = /^(\d{4})[-/.年](\d{1,2})(?:[-/.月](\d{1,2}))?月?日?$/.exec(v.trim());
     if (date && el.type === 'month') v = `${date[1]}-${date[2].padStart(2, '0')}`;
@@ -670,42 +741,32 @@
     return el.value === v;
   }
   function writeSearchValue(input, value) {
+    checkOperation();
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
     if (setter) setter.call(input, value); else input.value = value;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
-  function fillNativeSelect(el, value) {
+  async function fillNativeSelect(el, value) {
+    checkOperation();
     const v = String(value || '').trim();
     if (!v) return false;
-    // 1) 精确匹配
-    for (const opt of el.options) {
-      if (opt.textContent.trim() === v || opt.value === v) {
-        el.value = opt.value;
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return el.value === opt.value;
-      }
-    }
-    // 2) 包含匹配（"北京" ↔ "北京市"）
-    for (const opt of el.options) {
-      const t = opt.textContent.trim();
-      if (t && (t.includes(v) || v.includes(t))) {
-        el.value = opt.value;
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return el.value === opt.value;
-      }
-    }
-    // 3) 地点模糊匹配（籍贯"湖南长沙" ↔ 选项"湖南省"，去省/市后缀取最接近）
-    let best = null, bestLen = 0;
-    for (const opt of el.options) {
-      const len = matchDropdownOption(opt.textContent, v);
-      if (len > bestLen) { bestLen = len; best = opt; }
+    const kind = globalThis.__resumeSemantics.fieldKind(getLabelText(el), fieldRegistry.get(fieldOperation?.fieldId)?.context.section);
+    const options = [...el.options].filter(option => !option.disabled && option.textContent.trim());
+    let best = controlRules.rankOptions(options, v, kind);
+    if (!best || best.score < .97) {
+      const index = await resolveOption(el, options.map(option => option.textContent.trim()));
+      checkOperation();
+      if (Number.isInteger(index) && index >= 0 && index < options.length) best = { element: options[index], ai: true };
     }
     if (best) {
-      el.value = best.value;
+      el.value = best.element.value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
-      return el.value === best.value;
+      el.blur(); await sleep(120);
+      return { filled: el.value === best.element.value, dropdown: true,
+        match: best.ai ? 'ai' : best.preference ? 'preference' : best.score === 1 ? 'exact' : best.score >= .97 ? 'alias' : 'similar' };
     }
     return false;
   }
@@ -1365,6 +1426,14 @@
   }
   function findElement(fieldId, current = currentFieldContexts()) {
     const record = fieldRegistry.get(fieldId);
+    if (record && !record.element.isConnected && record.context.recordRoot?.isConnected) {
+      // A dependent select may be recreated after changing year/school. Rebind only inside the
+      // same surviving record, with one identical caption/type and the same current position.
+      const candidates = [...current].filter(([el, context]) => eligibleElement(el) && fingerprint(el) === record.fingerprint
+        && context.section === record.context.section && context.sectionRoot === record.context.sectionRoot
+        && context.recordRoot === record.context.recordRoot && context.recordIndex === record.context.recordIndex);
+      if (candidates.length === 1) { record.element = candidates[0][0]; record.context = candidates[0][1]; }
+    }
     if (!record || !eligibleElement(record.element) || fingerprint(record.element) !== record.fingerprint) return null;
     const context = current.get(record.element);
     if (!context || context.section !== record.context.section || context.sectionRoot !== record.context.sectionRoot
@@ -1389,13 +1458,19 @@
       const record = fieldRegistry.get(fieldId);
       const precision = record?.datePrecision || (record?.componentType === 'custom-datepicker' ? controlRules.datePrecision(el) : null);
       return { fieldId, value: value.slice(0, 20000), truncated: value.length > 20000,
-        ...(['month', 'day', 'unknown'].includes(precision) ? { datePrecision: precision } : {}) };
+      ...(['year', 'month', 'day', 'unknown'].includes(precision) ? { datePrecision: precision } : {}) };
     });
   }
   function sleep(ms) {
     const token = activeScanToken;
-    return new Promise(resolve => setTimeout(resolve, ms)).then(() => {
+    const operation = fieldOperation;
+    checkOperation();
+    const wait = operation ? Math.max(0, Math.min(ms, operation.deadline - clockNow())) : ms;
+    return new Promise(resolve => setTimeout(resolve, wait)).then(() => {
       if (!activeScanToken || token !== activeScanToken) throw new Error('填写已停止');
+      if (operation && clockNow() >= operation.deadline) {
+        const error = new Error('单个字段已超过 5 秒'); error.code = 'FIELD_TIMEOUT'; throw error;
+      }
     });
   }
   function isVisible(el) {
@@ -1419,6 +1494,7 @@
   }
   function stopAll() {
     activeScanToken = null;
+    optionAssistance = false;
     prepared = false;
     fieldRegistry.clear();
     fieldContexts.clear();
@@ -1482,9 +1558,9 @@
       try {
         const fields = collectFields();
         prepared = true;
-        sendResponse({ contentVersion: CONTENT_VERSION, fields: fields.map(({ id, label, placeholder, name, componentType, section, sectionLabel, recordIndex, hasValue, datePrecision }) =>
+        sendResponse({ contentVersion: CONTENT_VERSION, fields: fields.map(({ id, label, placeholder, name, componentType, section, sectionLabel, recordIndex, hasValue, datePrecision, datePart, intent, options }) =>
           ({ id, label, placeholder, name, componentType, section, sectionLabel, recordIndex, hasValue,
-            ...(datePrecision ? { datePrecision } : {}) })) });
+            ...(datePrecision ? { datePrecision } : {}), ...(datePart ? { datePart } : {}), ...(intent ? { intent } : {}), ...(options ? { options } : {}) })) });
       } catch (error) { prepared = false; sendResponse({ error: error.message }); }
       return false;
     }
@@ -1507,6 +1583,7 @@
       running = true;
       prepared = false;
       allowOverwrite = message.overwrite === true;
+      optionAssistance = message.aiAssist === true;
       executeFill(message.mappings, null, auditFieldIds).then(result => {
         running = false; stopAll(); sendResponse(result);
       }).catch(() => { running = false; stopAll(); sendResponse({ error: '填写中断，请检查已填写字段' }); });
