@@ -26,6 +26,8 @@ function fixture(fields = []) {
     }
     get ownerDocument() { return doc; }
     getAttribute(key) { return this.attrs[key] ?? null; }
+    setAttribute(key, value) { this.attrs[key] = String(value); }
+    removeAttribute(key) { delete this.attrs[key]; }
     querySelector() { return null; }
     querySelectorAll() { return []; }
     closest(selector) {
@@ -186,4 +188,12 @@ test('标签提取剥离包裹的可编辑内容，不把已有值当作标签�
   const prepared = await f.prepare();
   assert.equal(prepared.fields[0].label, '姓名');
   assert.equal(JSON.stringify(prepared).includes('PRIVATE_EXISTING'), false);
+});
+
+test('名称不透明且占位为请输入的日期控件按字段标签识别，避免当成普通下拉', async () => {
+  const f = fixture([{ name: 'opaque123', 'aria-label': '出生日期', placeholder: '请输入', 'aria-haspopup': 'listbox' }]);
+  f.inputs[0].readOnly = true;
+  await f.start(); const prepared = await f.prepare();
+  assert.equal(prepared.fields[0].componentType, 'custom-datepicker');
+  assert.equal(prepared.fields[0].label, '出生日期');
 });

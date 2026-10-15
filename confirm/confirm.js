@@ -1,6 +1,6 @@
 import { send, element, status, onClick, downloadJSON } from '../shared/ui.js';
 import { PROFILE_SCHEMA, selectedSources, recordTargets, diagnosticReason, isDateSource } from '../shared/profile.js';
-const UI_VERSION = '2.6.0';
+const UI_VERSION = '2.7.0';
 const requestId = new URL(location.href).searchParams.get('requestId');
 let polling = null;
 let state = '';
@@ -47,7 +47,7 @@ function activity(data) {
   if (total) { byId('activity-progress').max = total; byId('activity-progress').value = done; }
   byId('activity-counter').textContent = total ? `已处理 ${done} / ${total} 项` : '正在等待网页响应';
   byId('activity-counts').textContent = Number.isInteger(progress.filled) && Number.isInteger(progress.skipped)
-    ? `已填写 ${progress.filled} · 需手填 ${progress.skipped}` : stage === 'matching' ? '匹配进度不代表填写数量' : '';
+    ? `已填写 ${progress.filled} · 已跳过 ${progress.skipped}` : stage === 'matching' ? '匹配进度不代表填写数量' : '';
   byId('action-hint').textContent = data.status === 'matching' ? '尚未写入个人资料' : data.status === 'auditing' ? '网页已写入，可回到网页检查' : '仅处理你已确认的字段';
   const key = `${data.status}:${stage}`;
   if (activityKey !== key) { activityKey = key; activityStartedAt = progress.startedAt || Date.now(); }
@@ -235,10 +235,12 @@ function finish(result) {
   viewEpoch++;
   clearTimeout(polling); state = 'completed';
   showView('completed');
-  byId('completion-title').textContent = result.skipped ? '处理结束，部分内容需要你检查' : '所选字段已处理';
-  byId('completion-description').textContent = result.skipped ? '跳过的字段不会继续重试，可根据下面的原因手动补充。' : '填写完成后仍需在招聘网页核对与保存。';
+  const manual = (result.outcomes || []).filter(item => item.reason === 'manual_edit').length;
+  const skipped = Math.max(0, (result.skipped || 0) - manual);
+  byId('completion-title').textContent = skipped ? '处理结束，部分内容需要你检查' : '所选字段已处理';
+  byId('completion-description').textContent = `${manual ? `已保留你手动填写的 ${manual} 项，不再自动修改。` : ''}${skipped ? '未完成的字段不会继续重试，可根据下面的原因手动补充。' : '请在招聘网页核对与保存。'}`;
   byId('result-filled').textContent = String(result.filled || 0);
-  byId('result-skipped').textContent = String(result.skipped || 0);
+  byId('result-skipped').textContent = String(skipped);
   byId('result-dates').textContent = String(currentData.excludedDates || 0);
   byId('action-hint').textContent = '网页处理已结束，尚未替你提交';
   const reviews = document.getElementById('review-results'); reviews.replaceChildren();
@@ -257,9 +259,9 @@ function finish(result) {
   const skipReasons = { existing_value: '已有内容，本次保留', field_changed: '字段结构已变化，请重新检测',
     selection_not_committed: '组件未确认选中，请检查下拉候选或日期', component_refused: '组件未接受填写事件',
     range_requires_both: '共享日期范围需要同时确认开始和结束两个字段', field_timeout: '控件等待超时，已跳过，请手动填写（普通字段 5 秒、学校 10 秒）',
-    date_disabled: '日期填写已关闭', empty_value: '没有可填写内容' };
+    date_disabled: '日期填写已关闭', empty_value: '没有可填写内容', manual_edit: '已保留你的手动填写，不再自动修改' };
   for (const item of result.outcomes || []) if (item.status === 'skipped') {
-    reviews.append(element('p', 'review-note warning', `${labelOf(item.fieldId)}：${skipReasons[item.reason] || '未完成填写，请检查网页'}`));
+    reviews.append(element('p', 'review-note ' + (item.reason === 'manual_edit' ? 'ok' : 'warning'), `${labelOf(item.fieldId)}：${skipReasons[item.reason] || '未完成填写，请检查网页'}`));
     document.getElementById('after-review').hidden = false;
   }
   for (const item of result.outcomes || []) if (item.status === 'filled' && ['alias', 'similar', 'ai', 'preference'].includes(item.optionMatch)) {

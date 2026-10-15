@@ -541,6 +541,34 @@ test('填写后发现网页只接受月份，AI校对使用相同的年月精度
   assert.equal(JSON.stringify(diagnostic).includes('2024-09'), false);
 });
 
+test('手动接管的字段不再参与填写后AI校对，诊断只保存允许的状态和计数', async () => {
+  const profile = normalizeProfile({ basic: { name: 'DEMO_NAME', phone: 'DEMO_PHONE' } });
+  const fields = [{ id: 'F0', label: '姓名', componentType: 'native-input', section: 'basic' },
+    { id: 'F1', label: '手机号', componentType: 'native-input', section: 'basic' }];
+  const f = fixture({ profile, pageHandler: message => {
+    if (message.type === 'PREPARE_FIELDS') return { fields };
+    if (message.type === 'READ_VALUES') return { values: fields.map(field => ({ fieldId: field.id, value: '' })) };
+    if (message.type === 'APPLY_FIELDS') return { filled: 0, skipped: 2,
+      outcomes: [{ fieldId: 'F0', status: 'skipped', reason: 'manual_edit', adapterStage: 'PRIVATE_STAGE', optionsSeen: -1 },
+        { fieldId: 'F1', status: 'skipped', reason: 'selection_not_committed', adapterStage: 'choice', panelsSeen: 1, optionsSeen: 3, value: 'PRIVATE_OPTION' }],
+      readback: [{ fieldId: 'F0', value: 'PRIVATE_MANUAL_VALUE' }, { fieldId: 'F1', value: '' }] };
+    return { ok: true };
+  }, fetcher: async (url, init) => {
+    const request = JSON.parse(JSON.parse(init.body).messages[1].content);
+    return modelResponse(request.phase ? { reviews: request.fields.map(field => ({ fieldId: field.id, status: 'ok', reason: '演示' })) } : { mappings: [] });
+  } });
+  const flow = await f.detect();
+  await f.controller.handle({ type: 'MATCH_FIELDS', requestId: flow.requestId, sourceIds: ['S0', 'S1'], overwrite: true, aiAssist: true, aiReview: true }, flow.sender);
+  await f.controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: ['F0', 'F1'] }, flow.sender);
+  const after = f.requests.map(item => JSON.parse(JSON.parse(item.init.body).messages[1].content)).find(item => item.phase === 'after');
+  assert.deepEqual(after.fields.map(field => field.id), ['F1']);
+  assert.equal(JSON.stringify(f.requests).includes('PRIVATE_MANUAL_VALUE'), false);
+  const diagnostic = (await f.controller.handle({ type: 'GET_DIAGNOSTICS' }, options)).diagnostic;
+  assert.deepEqual(diagnostic.outcomes, [{ fieldId: 'F0', status: 'skipped', reason: 'manual_edit' },
+    { fieldId: 'F1', status: 'skipped', reason: 'selection_not_committed', adapterStage: 'choice', panelsSeen: 1, optionsSeen: 3 }]);
+  assert.equal(JSON.stringify(diagnostic).includes('PRIVATE_'), false);
+});
+
 test('关闭日期在后台过滤资料和字段，记住偏好且保留原始本机日期', async () => {
   const profile = normalizeProfile({ basic: { name: 'DEMO_NAME', birthday: '2000-03-04' }, education: [{ school: 'DEMO_SCHOOL', startDate: '2020-09-12' }] });
   const fields = [{ id: 'F0', label: '姓名', section: 'basic', componentType: 'native-input' },

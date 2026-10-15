@@ -14,21 +14,39 @@
   let debounceTimer = null;
   const fieldRegistry = new Map();
   const MAX_FIELDS = 400;
-  const CONTENT_VERSION = '2.6.0';
+  const CONTENT_VERSION = '2.7.0';
   const FIELD_TIMEOUT_MS = 5000;
   const clockNow = () => globalThis.performance?.now() ?? Date.now();
   let fieldOperation = null;
+  const manualNodes = new WeakSet();
+  const manualFields = new Set();
+  let lastManualEditAt = 0;
+  let nativeActivation = false;
+  let clearActiveField = () => {};
   let optionAssistance = false;
   const sectionAgent = globalThis.__resumeSections;
   const controlRules = globalThis.__resumeControls;
   const componentControls = controlRules.create({ visible: isVisible, sleep, label: getLabelText, write: writeSearchValue,
-    close: closeOpenPanel, check: checkOperation, resolveOption: resolveOption, canResolve: () => optionAssistance });
+    close: closeOpenPanel, check: checkOperation, resolveOption: resolveOption, canResolve: () => optionAssistance,
+    claimPanel: panel => fieldOperation?.panels.add(panel),
+    trace: info => { if (fieldOperation) { const diagnostic = fieldOperation.diagnostic;
+      diagnostic.adapterStage = info.stage;
+      if (Number.isInteger(info.panels)) diagnostic.panelsSeen = info.panels;
+      if (Number.isInteger(info.candidates)) diagnostic.optionsSeen = info.candidates;
+    } } });
   let fieldContexts = new Map();
   let includeExisting = false;
   const INPUT_TYPES = new Set(['text', 'search', 'email', 'tel', 'url', 'number', 'date', 'month', 'week', 'time', 'datetime-local', 'radio']);
 
+  function wasManuallyEdited(el) {
+    return Boolean(el && (manualNodes.has(el) || manualNodes.has(componentControls.fieldRoot(el))));
+  }
+
   function checkOperation() {
     if (!activeScanToken) throw new Error('填写已停止');
+    if (fieldOperation?.fieldIds.some(id => manualFields.has(id) || wasManuallyEdited(fieldRegistry.get(id)?.element))) {
+      const error = new Error('已保留手动填写'); error.code = 'MANUAL_EDIT'; throw error;
+    }
     if (fieldOperation && clockNow() >= fieldOperation.deadline) {
       const error = new Error('字段填写超时'); error.code = 'FIELD_TIMEOUT'; throw error;
     }
@@ -91,7 +109,9 @@
     if (inner && inner.value.trim()) return true;
     if (el.isContentEditable && el.textContent.trim()) return true;
     const display = el.querySelector('[class*="display-value"], [class*="selection-item"], [class*="select-value"], [class*="selected-value"]');
-    return Boolean((el.getAttribute('aria-valuetext') || display?.textContent || getDropdownDisplayValue(el) || '').trim());
+    const selected = componentControls.choiceSignals(el) ? componentControls.displayed(el) : '';
+    const current = (el.getAttribute('aria-valuetext') || display?.textContent || getDropdownDisplayValue(el) || selected || '').trim();
+    return Boolean(current && !/^(?:请选择|请输入|please select|select)(?:[.。…\s]*)$/i.test(current));
   }
   function fingerprint(el) {
     return [el.tagName, el.type || '', el.name || '', el.getAttribute('role') || '', getLabelText(el)].join('|');
@@ -176,11 +196,13 @@
     // 避免"更新日期""发布时间"等纯文本输入框误判）
     const ph = (el.placeholder || '').toLowerCase();
     if (/出生|生日|birth|年\s*月|(?:请选择|选择)(?:开始|结束|起始|截止)?(?:日期|时间)/.test(ph) && ph.length > 0) return true;
-    const labelNode = el.closest('[class*="form-item"],[class*="field-item"],[class*="form-group"]')?.querySelector('label,[class*="label"],[class*="Label"]');
-    const kind = globalThis.__resumeSemantics.fieldKind(el.getAttribute('aria-label') || el.getAttribute('data-label') || el.name || ph || (labelNode ? readLabelText(labelNode) : ''));
-    if (['startDate', 'endDate', 'birthday', 'expectedGraduationDate'].includes(kind) && hasDropdownBehavior(el)) return true;
+    // Opaque names and generic “请输入” placeholders must not hide a visible date caption.
+    const caption = el.closest('[class*="form-item"],[class*="field-item"],[class*="form-group"]')?.querySelector('label,[class*="label"],[class*="Label"]');
+    const dateLabels = [el.getAttribute('aria-label'), el.getAttribute('data-label'), caption ? readLabelText(caption) : '', el.name, ph];
+    if (dateLabels.some(label => globalThis.__resumeSemantics.isDateField({ label }))
+      && (el.readOnly || hasDropdownBehavior(el))) return true;
     // 容器类名含强日期模式（如 month-range-select date_info）
-    const anc = el.closest('[class*="datepicker"], [class*="date-picker"], [class*="date_info"], [class*="calendar"], [class*="picker-addon"]');
+    const anc = el.closest('[class*="datepicker"], [class*="date-picker"], [class*="date_info"], [class*="calendar"], [class*="picker-addon"],.el-date-editor,.ant-picker,.arco-picker,.t-date-picker,.n-date-picker,.ivu-date-picker');
     if (anc) return true;
     // 内含 input 且自身类名含 date/time（保留原有，放宽正则）
     if (el.querySelector('input') && /date|time/i.test(cls)) return true;
@@ -207,7 +229,13 @@
         if (!info || info.options.find(option => !option.disabled && isVisible(option)) !== el) return;
       }
       if (!isVisible(el)) return;
-      push(el);
+      // Search inputs may become aria-hidden after selecting (for example Arco).
+      // Keep the stable semantic widget as the field, rather than its transient editor.
+      const widget = el.closest('[role="combobox"]');
+      if (type !== 'radio' && widget && widget !== el && !hasDatepickerBehavior(el)
+        && widget.querySelectorAll('input:not([type="hidden"]),select,textarea').length === 1) {
+        push(widget); seen.add(el);
+      } else push(el);
     });
 
     // 第二轮：自定义组件（ARIA 语义 + 类名模式 + contenteditable）
@@ -245,6 +273,7 @@
       check() { if (!activeScanToken || activeScanToken !== token) throw new Error('操作已停止'); } };
   }
   function collectFields() {
+    manualFields.clear();
     const fields = [];
     excludedDates = 0;
     fieldRegistry.clear();
@@ -263,12 +292,14 @@
     collected.add(el);
 
     const split = splitDateInfo(el);
-    const componentType = split ? el.tagName === 'SELECT' ? 'native-select' : el.readOnly || hasDropdownBehavior(el) ? 'custom-dropdown' : 'native-input' : detectComponentType(el);
+    let componentType = split ? el.tagName === 'SELECT' ? 'native-select' : el.readOnly || hasDropdownBehavior(el) ? 'custom-dropdown' : 'native-input' : detectComponentType(el);
+    const label = getLabelText(el);
+    if (!split && ['custom-dropdown', 'custom-interactive'].includes(componentType) && globalThis.__resumeSemantics.isDateField({ label })) componentType = 'custom-datepicker';
     if (componentType === 'unknown') return;
     const field = {
       id: 'F' + fields.length, componentType,
       tag: el.tagName.toLowerCase(),
-      label: getLabelText(el),
+      label,
       placeholder: getPlaceholder(el),
       name: el.name || el.getAttribute('name') || el.getAttribute('formcontrolname') || '',
       contextText: getContextText(el),
@@ -608,8 +639,12 @@
       if (!activeScanToken || activeScanToken !== batchToken) throw new Error('填写已停止');
       const mapping = ordered[i];
       if (handled.has(mapping.fieldId)) continue;
+      while (activeScanToken && lastManualEditAt && clockNow() - lastManualEditAt < 600) await sleep(100);
       reportProgress(mapping.fieldId);
       try {
+        if (manualFields.has(mapping.fieldId) || wasManuallyEdited(fieldRegistry.get(mapping.fieldId)?.element)) {
+          outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: 'manual_edit' }); continue;
+        }
         if (!includeDates && fieldRegistry.get(mapping.fieldId)?.isDate) {
           outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: 'date_disabled' }); continue;
         }
@@ -627,6 +662,7 @@
         }
 
         const value = String(mapping.value);
+        activateField(el, mapping.fieldId);
         const componentType = mapping.componentType || detectComponentType(el);
         const range = componentType === 'custom-datepicker' && dateRangeInfo(el);
         if (range) {
@@ -636,13 +672,13 @@
             && range.inputs.every(input => eligibleElement(input) && (allowOverwrite || !fieldHasValue(input)))) {
             pair.forEach(item => handled.add(item.fieldId));
             let response = { filled: false, precisions: [] };
-            try { response = await withinFieldBudget(mapping, el, () => fillDateRangePair(range.inputs, pair.map(item => String(item.value)))); } catch {}
+            try { response = await withinFieldBudget(mapping, el, () => fillDateRangePair(range.inputs, pair.map(item => String(item.value))), pair.map(item => item.fieldId)); } catch {}
             const success = response.filled;
             pair.forEach((item, index) => {
               const precision = response.precisions[index];
               if (['month', 'day'].includes(precision)) fieldRegistry.get(item.fieldId).datePrecision = precision;
               outcomes.push({ fieldId: item.fieldId, status: success ? 'filled' : 'skipped',
-                ...(success ? {} : { reason: response.timeout ? 'field_timeout' : 'selection_not_committed' }),
+                ...(success ? {} : { reason: response.manual ? 'manual_edit' : response.timeout ? 'field_timeout' : 'selection_not_committed' }),
                 ...(['year', 'month', 'day'].includes(precision) ? { datePrecision: precision } : {}) });
             });
             if (success) { count += 2; range.inputs.forEach(highlightField); }
@@ -657,9 +693,13 @@
           const response = await withinFieldBudget(mapping, el, () => fillByType(el, value, componentType, mapping.fieldId));
           const detail = typeof response === 'object' && response ? response : { filled: Boolean(response) };
           const filled = detail.filled;
+          if (filled && detail.dropdown) fieldRegistry.get(mapping.fieldId).readSelectedLabel = true;
           if (filled) { highlightField(el); count++; }
           outcomes.push({ fieldId: mapping.fieldId, status: filled ? 'filled' : 'skipped',
-            ...(filled ? {} : { reason: detail.timeout ? 'field_timeout' : 'selection_not_committed' }),
+            ...(filled ? {} : { reason: detail.manual ? 'manual_edit' : detail.timeout ? 'field_timeout' : 'selection_not_committed' }),
+            ...(!filled && detail.adapterStage ? { adapterStage: detail.adapterStage,
+              ...(Number.isInteger(detail.panelsSeen) ? { panelsSeen: detail.panelsSeen } : {}),
+              ...(Number.isInteger(detail.optionsSeen) ? { optionsSeen: detail.optionsSeen } : {}) } : {}),
             ...(typeof detail.dropdown === 'boolean' ? { dropdownDetected: detail.dropdown } : {}),
             ...(['exact', 'alias', 'similar', 'ai', 'preference'].includes(detail.match) ? { optionMatch: detail.match } : {}),
             ...(['year', 'day', 'month'].includes(detail.precision) ? { datePrecision: detail.precision } : {}) });
@@ -669,7 +709,7 @@
           outcomes.push({ fieldId: mapping.fieldId, status: 'skipped', reason: 'component_refused' });
         }
         if (onProgress) onProgress(i + 1, total);
-      } finally { reportProgress(); }
+      } finally { clearActiveField(); reportProgress(); }
       await sleep(150);
     }
 
@@ -678,16 +718,18 @@
     return result;
   }
 
-  async function withinFieldBudget(mapping, el, task) {
+  async function withinFieldBudget(mapping, el, task, fieldIds = [mapping.fieldId]) {
     const timeoutMs = globalThis.__resumeSemantics.fieldKind(getLabelText(el), 'education') === 'school' ? 10000 : FIELD_TIMEOUT_MS;
-    fieldOperation = { fieldId: mapping.fieldId, deadline: clockNow() + timeoutMs };
-    try { const result = await task(); checkOperation(); return result; }
+    fieldOperation = { fieldId: mapping.fieldId, fieldIds, panels: new Set(), diagnostic: {}, deadline: clockNow() + timeoutMs };
+    try { checkOperation(); const result = await task(); checkOperation(); return result && (typeof result !== 'object' || result.filled) ? result
+      : { ...(typeof result === 'object' && result ? result : { filled: false }), ...fieldOperation.diagnostic }; }
     catch (error) {
+      if (error.code === 'MANUAL_EDIT') return { filled: false, manual: true, precisions: [] };
       if (error.code !== 'FIELD_TIMEOUT') throw error;
       // All awaited continuations have unwound. Do not race a live DOM-writing task against a timer.
       fireCloseEvents(el, el, true);
       el.blur?.();
-      return { filled: false, timeout: true, precisions: [] };
+      return { filled: false, timeout: true, precisions: [], ...fieldOperation.diagnostic };
     } finally { fieldOperation = null; }
   }
 
@@ -732,7 +774,10 @@
     const option = info.options.find(option => !option.disabled && isVisible(option)
       && (canonical(info.optionLabel(option)) === canonical(value) || normalize(option.value) === normalize(value)));
     if (!option) return false;
-    option.click();
+    // Browser activation emits trusted input/change even for a script's .click().
+    // The synchronous guard distinguishes those from an actual user's selection.
+    nativeActivation = true;
+    try { option.click(); } finally { nativeActivation = false; }
     if (!option.checked) {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked')?.set;
       if (setter) setter.call(option, true); else { info.options.forEach(item => { item.checked = item === option; }); }
@@ -1430,6 +1475,45 @@
   }
 
   // ===== 高亮 =====
+  function activateField(el, fieldId) {
+    clearActiveField();
+    const target = componentControls.fieldRoot(el);
+    const outline = target.style.outline, offset = target.style.outlineOffset;
+    target.setAttribute('data-resume-autofill-active', 'true');
+    target.style.outline = '2px solid #285ce4'; target.style.outlineOffset = '3px';
+    el.scrollIntoView?.({ block: 'center', behavior: 'instant' });
+    const badge = document.createElement?.('div');
+    if (badge) {
+      badge.textContent = `正在填写：${getLabelText(el) || fieldId} · 手动输入会保留`;
+      badge.setAttribute('role', 'status'); badge.setAttribute('data-resume-autofill-indicator', 'true');
+      Object.assign(badge.style, { position: 'fixed', right: '18px', bottom: '18px', zIndex: '2147483646', pointerEvents: 'none',
+        padding: '10px 16px', borderRadius: '8px', background: '#285ce4', color: 'white', font: '13px sans-serif', boxShadow: '0 3px 15px #0002' });
+      document.body.append(badge);
+    }
+    clearActiveField = () => { target.style.outline = outline; target.style.outlineOffset = offset;
+      target.removeAttribute?.('data-resume-autofill-active'); badge?.remove(); clearActiveField = () => {}; };
+  }
+  function userEdited(event) {
+    if (!event.isTrusted || !activeScanToken || nativeActivation) return;
+    const target = event.target;
+    if (!target?.getAttribute) return;
+    const clicking = event.type === 'pointerdown' || event.type === 'click';
+    const activeElement = fieldRegistry.get(fieldOperation?.fieldId)?.element;
+    const inPanel = fieldOperation && ([...fieldOperation.panels].some(panel => panel.contains(target))
+      || activeElement?.isConnected && componentControls.ownsTarget(activeElement, target));
+    if (clicking && !inPanel && target.type !== 'radio') return;
+    const ids = [];
+    for (const [id, record] of fieldRegistry) {
+      const el = record.element;
+      if (el === target || el.contains(target) || componentControls.fieldRoot(el).contains(target)
+        || el.type === 'radio' && radioInfo(el)?.options.includes(target)) ids.push(id);
+    }
+    if (inPanel) ids.push(...fieldOperation.fieldIds);
+    if (!ids.length) { if (!clicking) { manualNodes.add(target); manualNodes.add(componentControls.fieldRoot(target)); } return; }
+    lastManualEditAt = clockNow();
+    for (const id of ids) { manualFields.add(id); const el = fieldRegistry.get(id)?.element; if (el) manualNodes.add(el); }
+  }
+  for (const type of ['beforeinput', 'input', 'change', 'pointerdown', 'click']) document.addEventListener?.(type, userEdited, true);
   function highlightField(el) {
     const target = el.closest('[class*="select"], [class*="input"], [class*="picker"], [class*="field"]') || el;
     const orig = target.style.boxShadow;
@@ -1463,17 +1547,18 @@
     return fieldIds.map(fieldId => {
       const el = findElement(fieldId, current);
       if (!el) return { fieldId, unavailable: true };
+      const record = fieldRegistry.get(fieldId);
       let value = '';
       if (el.type === 'radio') {
         const info = radioInfo(el), selected = info?.options.find(option => option.checked);
         value = selected ? info.optionLabel(selected) : '';
       } else if (el.tagName === 'SELECT') value = el.selectedIndex >= 0 ? el.options[el.selectedIndex]?.textContent || '' : '';
+      else if (record?.readSelectedLabel || ['custom-dropdown', 'custom-interactive', 'school-autocomplete'].includes(record?.componentType)) value = componentControls.displayed(el);
       else if (typeof el.value === 'string') value = el.value;
       else {
         const input = el.querySelector('input:not([type="hidden"]),textarea');
         value = input?.value || getDropdownDisplayValue(el) || (el.isContentEditable ? el.textContent : '') || '';
       }
-      const record = fieldRegistry.get(fieldId);
       const precision = record?.datePrecision || (record?.componentType === 'custom-datepicker' ? controlRules.datePrecision(el) : null);
       return { fieldId, value: value.slice(0, 20000), truncated: value.length > 20000,
       ...(['year', 'month', 'day', 'unknown'].includes(precision) ? { datePrecision: precision } : {}) };
@@ -1486,6 +1571,7 @@
     const wait = operation ? Math.max(0, Math.min(ms, operation.deadline - clockNow())) : ms;
     return new Promise(resolve => setTimeout(resolve, wait)).then(() => {
       if (!activeScanToken || token !== activeScanToken) throw new Error('填写已停止');
+      if (operation) checkOperation();
       if (operation && clockNow() >= operation.deadline) {
         const error = new Error('字段填写超时'); error.code = 'FIELD_TIMEOUT'; throw error;
       }
@@ -1499,6 +1585,9 @@
     for (let parent = el.parentElement; parent; parent = parent.parentElement) {
       const parentStyle = window.getComputedStyle(parent);
       if (parentStyle.display === 'none' || parentStyle.visibility === 'hidden' || parentStyle.opacity === '0') return false;
+      if (/hidden|clip/.test([parentStyle.overflow, parentStyle.overflowX, parentStyle.overflowY].join(' '))) {
+        const clip = parent.getBoundingClientRect(); if (clip.width < 1 || clip.height < 1) return false;
+      }
     }
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
@@ -1511,6 +1600,7 @@
     clearTimeout(debounceTimer);
   }
   function stopAll() {
+    clearActiveField();
     activeScanToken = null;
     optionAssistance = false;
     prepared = false;

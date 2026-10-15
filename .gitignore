@@ -14,6 +14,7 @@ Thumbs.db
 .playwright-mcp/
 .sisyphus/
 .preview/
+node_modules/
 
 # Personal backups and local secrets
 personal-profile*.json

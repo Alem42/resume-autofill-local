@@ -1,8 +1,8 @@
 // Component interaction stays in the isolated page world. No storage, fetch or site-specific code execution.
 (() => {
   if (globalThis.__resumeControls) return;
-  const CHOICE_PANELS = '[role="listbox"],[role="tree"],[class*="dropdown"],[class*="Dropdown"],[class*="autocomplete"],[class*="AutoComplete"],[class*="suggestion"],[class*="select-menu"],[class*="Select-menu"],[class*="select-list"],[class*="Select-list"],[class*="select-panel"],[class*="Select-panel"],[class*="select-popup"],[class*="Select-popup"],[class*="popover"],[class*="Popover"]';
-  const DATE_PANELS = '.ant-calendar,.ant-calendar-picker-panel,.ant-picker-dropdown,.el-picker-panel,.flatpickr-calendar,.react-datepicker,.MuiPickersPopper-root,[class*="DayPicker"],[class*="DateCalendar"],[class*="calendar"],[class*="Calendar"],[class*="date-picker"],[class*="DatePicker"],[class*="datepicker"],[class*="picker-panel"],[class*="Picker-panel"],[class*="picker-popup"],[class*="Picker-popup"],[class*="Picker-popover"],[class*="date-panel"],[class*="month-panel"]';
+  const CHOICE_PANELS = '[role="listbox"],[role="tree"],[class*="dropdown"],[class*="Dropdown"],[class*="autocomplete"],[class*="AutoComplete"],[class*="suggestion"],[class*="select-menu"],[class*="Select-menu"],[class*="select-list"],[class*="Select-list"],[class*="select-panel"],[class*="Select-panel"],[class*="select-popup"],[class*="Select-popup"],[class*="popover"],[class*="Popover"],.arco-select-popup,.t-select__dropdown,.t-popup__content,.n-base-select-menu,[class*="phoenix-selectList"],.phoenix-single-select-list';
+  const DATE_PANELS = '.ant-calendar,.ant-calendar-picker-panel,.ant-picker-dropdown,.el-picker-panel,.flatpickr-calendar,.react-datepicker,.MuiPickersPopper-root,[class*="DayPicker"],[class*="DateCalendar"],[class*="calendar"],[class*="Calendar"],[class*="date-picker"],[class*="DatePicker"],[class*="datepicker"],[class*="picker-panel"],[class*="Picker-panel"],[class*="picker-popup"],[class*="Picker-popup"],[class*="Picker-popover"],[class*="date-panel"],[class*="month-panel"],.el-date-picker,.arco-picker-container,.arco-picker-popup,.t-date-picker__panel,.n-date-panel,.ivu-date-picker-transfer,.layui-laydate';
   const compact = text => String(text || '').normalize('NFKC').toLowerCase().replace(/[\s\u200b\u00a0·•,，:：_\-]/g, '');
   const core = text => compact(text).replace(/\([^)]*\)|\[[^\]]*\]/g, '');
   const aliases = new Map([['大学本科', '本科'], ['本科毕业', '本科'], ['学士', '本科'], ['硕士研究生', '硕士'], ['博士研究生', '博士'], ['大专', '专科'], ['汉族', '汉'],
@@ -97,9 +97,10 @@
       if (/y{2,4}[^a-z]*m{1,2}(?![a-z])|m{1,2}[^a-z]*y{2,4}/i.test(format) || /年月|年.*月/.test(format)) return 'month';
       if (/yyyy|YYYY|年份|选择年/.test(format) && !/月|[mMdD]/.test(format.replace(/yyyy/ig, ''))) return 'year';
       if (node.getAttribute('data-picker') === 'year' || /year-picker|yearpicker/i.test(node.className || '')) return 'year';
-      if (node.getAttribute('data-picker') === 'month' || /month-picker|monthpicker|month-range/i.test(node.className || '')) return 'month';
+      if (node.getAttribute('data-picker') === 'month' || /month-picker|monthpicker|month-range|date-editor--month(?:\s|$)|picker-month(?:\s|$)/i.test(node.className || '')) return 'month';
     }
     if (panel) {
+      if (/n-date-panel--month(?:\s|$)/.test(panel.className || '')) return 'month';
       const shown = node => {
         for (let parent = node; parent; parent = parent.parentElement) {
           if (parent.hidden || parent.getAttribute('aria-hidden') === 'true') return false;
@@ -108,6 +109,7 @@
         }
         return node.getBoundingClientRect().width > 0;
       };
+      if ([...panel.querySelectorAll('.ant-picker-month-panel,.ant-calendar-month-panel,.phoenix-calendar-month-panel,.el-month-table,.arco-panel-month,.t-date-picker__panel-month')].some(shown)) return 'month';
       if ([...panel.querySelectorAll('.ant-picker-date-panel,.ant-calendar-date-panel,.el-date-table,.flatpickr-days,[data-date],td[title]')].some(shown)) return 'day';
       const days = new Set([...panel.querySelectorAll('span,div,td,button,li')].filter(shown).map(node => node.textContent.trim())
         .filter(text => /^\d{1,2}$/.test(text) && +text > 0 && +text <= 31));
@@ -131,6 +133,8 @@
       return '';
     }
     function fieldRoot(el) {
+      const known = el.closest('.ant-select,.el-select,.arco-select,.t-select__wrap,.n-select,.phoenix-select,.ant-picker,.el-date-editor,.arco-picker,.t-date-picker,.n-date-picker,.phoenix-date-picker');
+      if (known) return known;
       let best = el;
       for (let node = el.parentElement, depth = 0; node && node !== document.body && depth < 5; node = node.parentElement, depth++) {
         if (node.querySelectorAll('input:not([type="hidden"]),select,textarea').length > 1) break;
@@ -150,7 +154,8 @@
         .filter(Boolean).flatMap(value => value.split(/\s+/));
       const all = [...document.querySelectorAll(selectors)].filter(panel => panel !== el && !panel.contains(el) && visible(panel)
         && !panel.closest('nav,[role="navigation"]') && panel.getAttribute('role') !== 'option'
-        && !/icon|arrow|caret|dropdown-item|dropdown_item|select-item|select_item|(?:^|[-_])option$/i.test(panel.className || ''));
+        && !panel.matches('.phoenix-single-select-list__item,.phoenix-selectList__listItem')
+        && !/icon|arrow|caret|(?:dropdown|select|menu|list)[-_]+(?:item|option)(?:[-_\s]|$)|(?:^|[-_])option$/i.test(panel.className || ''));
       const linked = all.filter(panel => ids.includes(panel.id) || ids.some(id => panel.querySelector(`[id="${CSS.escape(id)}"]`)));
       const candidates = linked.length ? linked : all.filter(panel => {
         if (before.has(panel) && !root.contains(panel)) return false;
@@ -158,20 +163,28 @@
         return r.left < rect.right + 160 && r.right > rect.left - 160 && Math.abs(r.top - rect.bottom) < 650;
       });
       // Keep specific inner menus instead of arbitrary outer overlays containing several controls.
-      return candidates.filter(panel => !candidates.some(other => other !== panel
+      const found = candidates.filter(panel => !candidates.some(other => other !== panel
         && (selectors === DATE_PANELS ? other.contains(panel) : panel.contains(other))))
         .sort((a, b) => Math.abs(a.getBoundingClientRect().top - rect.bottom) - Math.abs(b.getBoundingClientRect().top - rect.bottom));
+      found.forEach(panel => hooks.claimPanel?.(panel));
+      return found;
     }
     function optionElements(menu) {
-      return [...menu.querySelectorAll('[role="option"],li,[class*="option"],[class*="Option"],[class*="item"],span,div,p')]
-        .filter(node => visible(node) && !node.disabled && node.getAttribute('aria-disabled') !== 'true'
+      const eligible = node => visible(node) && !node.disabled && node.getAttribute('aria-disabled') !== 'true'
           && !/disabled|arrow|icon|clear|remove|placeholder|loading/i.test(node.className || '')
           && !node.closest('a[href],button[type="submit"],button[type="reset"]') && !node.querySelector('input,select,textarea,button,a[href]')
-          && node.textContent.trim().length > 0 && node.textContent.trim().length <= 250);
+          && node.textContent.trim().length > 0 && node.textContent.trim().length <= 250;
+      const semantic = [...menu.querySelectorAll('[role="option"],li,.ant-select-item-option,.el-select-dropdown__item,.arco-select-option,.n-base-select-option,.t-select-option,.phoenix-single-select-list__item,.phoenix-selectList__listItem')].filter(eligible);
+      if (semantic.length) return semantic.filter(node => !semantic.some(other => other !== node && other.contains(node)));
+      const nodes = [...menu.querySelectorAll('[class*="option"],[class*="Option"],[class*="item"],span,div,p')].filter(eligible);
+      return nodes.filter(node => !nodes.some(other => other !== node && node.contains(other)));
     }
     function displayed(el) {
       const input = textInput(el), root = fieldRoot(el);
-      const node = root.querySelector('[class*="display-value"],[class*="selection-item"],[class*="selected-value"],[class*="select-value"],[class*="dropdown-value"],[class*="SelectedValue"],[class*="selected-label"]');
+      const node = [...root.querySelectorAll('[class*="display-value"],[class*="selection-item"],[class*="selected-value"],[class*="select-value"],[class*="dropdown-value"],[class*="SelectedValue"],[class*="selected-label"],.el-select__selected-item,.ant-select-content-has-value,.arco-select-view-value,.t-select__single,.n-base-selection-input__content,.n-base-selection-overlay__wrapper,.phoenix-select__tipEle')]
+        .find(node => visible(node) && !node.querySelector('input') && !/input-wrapper|is-transparent|placeholder/.test(node.className || '')
+          || visible(node) && node.classList?.contains('el-select__placeholder') && !node.classList.contains('is-transparent')
+          || visible(node) && node.classList?.contains('ant-select-content-has-value'));
       const direct = node?.textContent || el.getAttribute('aria-valuetext') || root.getAttribute('aria-valuetext') || input?.value;
       if (direct) return direct.trim();
       if (input) return '';
@@ -189,7 +202,7 @@
       trigger.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); trigger.click();
       return { root, input, trigger };
     }
-    async function choose(el, best, menus) {
+    async function choose(el, best, menus, preserveParent = false) {
       const input = textInput(el), candidate = best.element, menu = menus.find(menu => menu.contains(candidate));
       const before = displayed(el), selectedText = candidate.textContent.trim();
       const chain = [candidate];
@@ -203,9 +216,10 @@
         const after = displayed(el), kind = kindOf(el);
         const matched = optionScore(after, selectedText, kind) > 0;
         const committed = after !== before || candidate.getAttribute('aria-selected') === 'true' || !candidate.isConnected
+          || /(?:^|\s)(?:is-selected|selected|[\w-]+-selected)(?:\s|$)/.test(candidate.className || '')
           || !visible(menu) || input?.getAttribute('aria-expanded') === 'false' || fieldRoot(el).getAttribute('aria-expanded') === 'false';
         if (matched && committed) {
-          await close(el, input || el); await sleep(120);
+          if (!preserveParent) await close(el, input || el); await sleep(120);
           if (kind === 'school') await sleep(350);
           if (optionScore(displayed(el), selectedText, kind) > 0) return true;
           return false;
@@ -213,7 +227,7 @@
       }
       return false;
     }
-    async function fillChoice(el, value, { plain = false } = {}) {
+    async function fillChoice(el, value, { plain = false, preserveParent = false } = {}) {
       const input = textInput(el), kind = kindOf(el);
       const assist = Boolean(hooks.resolveOption && (!hooks.canResolve || hooks.canResolve()));
       const terms = kind === 'school' ? [...new Set([String(value), String(value).replace(/\([^)]*\)|（[^）]*）/g, '').trim(),
@@ -236,8 +250,9 @@
         stableFor = signature && signature === lastSignature ? stableFor + 100 : 0;
         lastSignature = signature;
         const busy = kind === 'school' && [fieldRoot(el), ...menus].some(root => root.getAttribute('aria-busy') === 'true'
-          || [...root.querySelectorAll('[aria-busy="true"],[role="progressbar"],[class*="loading"],[class*="Loading"],[class*="spinner"]')].some(visible));
+          || [...root.querySelectorAll('[aria-busy="true"],[role="progressbar"],.el-loading-mask,.ant-spin-spinning,[class*="spinner"]')].some(visible));
         best = rankOptions(options, value, kind);
+        hooks.trace?.({ stage: 'choice', kind, panels: menus.length, candidates: options.length, matched: Boolean(best) });
         if (kind === 'school' && (sinceSearch < 1000 || busy || options.length && stableFor < 300)) continue;
         if (best?.score >= .97 || best && !assist) break;
         if (!best && input && !input.readOnly && kind === 'school' && searched && sinceSearch >= 3500 && searchIndex + 1 < terms.length) {
@@ -263,7 +278,7 @@
         }
       }
       if (best) {
-        const filled = await choose(el, best, menus);
+        const filled = await choose(el, best, menus, preserveParent);
         return { filled, dropdown: true, match: best.ai ? 'ai' : best.preference ? 'preference' : best.score === 1 ? 'exact' : best.score >= .97 ? 'alias' : 'similar' };
       }
       if (detected || !plain) await close(el, input || el); else input?.blur();
@@ -272,7 +287,7 @@
     }
     const safeCell = node => visible(node) && !node.disabled && node.getAttribute('aria-disabled') !== 'true'
       && !(node.tagName === 'BUTTON' && ['submit', 'reset'].includes(node.type))
-      && !/disabled|prev-month|next-month|last-month|outside|prevMonth|nextMonth/i.test(node.className || '')
+      && !/disabled|prev-month|next-month|last-month|outside|prevMonth|nextMonth|--additional|--excluded|other-month/i.test(node.className || '')
       && !node.closest('button[type="submit"],button[type="reset"]')
       && (!node.closest('a[href]') || /^(#|javascript:void\(0\);?)$/i.test(node.closest('a[href]').getAttribute('href') || ''));
     const safeNavigation = node => visible(node) && !node.disabled && node.getAttribute('aria-disabled') !== 'true'
@@ -287,10 +302,14 @@
       const panel = datePanels.get(textInput(el) || el);
       if (!panel?.isConnected || !visible(panel)) return;
       const button = [...panel.querySelectorAll('button,[role="button"],[class*="confirm"],[class*="Confirm"],[class*="footer"]')]
-        .find(node => safeCell(node) && /^(确定|确认|确认日期|完成|ok|done)$/i.test(node.textContent.trim()) && !node.querySelector('input,textarea,select'));
+        .find(node => safeCell(node) && /^(确定|确认|确认日期|完成|ok|done|confirm)$/i.test(node.textContent.trim()) && !node.querySelector('input,textarea,select'));
       if (button) { check(); button.click(); await sleep(160); }
     }
     const monthNames = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+    function calendarView(panel) {
+      const overlays = [...panel.querySelectorAll('[class$="-year-panel"],[class$="-month-panel"],.arco-panel-month,.arco-panel-year,.t-date-picker__panel-month,.t-date-picker__panel-year')].filter(visible);
+      return overlays.find(node => /year|year-table/.test(node.className || '')) || overlays.at(-1) || panel;
+    }
     function monthNumber(text) {
       const value = compact(text).replace(/月$/, '');
       const chinese = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二'];
@@ -300,6 +319,8 @@
       return /^\d{1,2}$/.test(value) && +value >= 1 && +value <= 12 ? +value : 0;
     }
     function panelMonth(panel) {
+      const outer = panel;
+      panel = calendarView(panel);
       const counts = new Map();
       for (const cell of panel.querySelectorAll('[title],[data-date],[aria-label]')) {
         if (!safeCell(cell)) continue;
@@ -308,13 +329,19 @@
       }
       const best = [...counts].sort((a, b) => b[1] - a[1])[0];
       if (best) { const [year, month] = best[0].split('-').map(Number); return { year, month }; }
-    const header = panel.querySelector('.react-datepicker__current-month,.el-date-picker__header,.ant-picker-header-view,.ant-calendar-header,.flatpickr-current-month,.rdp-caption_label,.DayPicker-Caption,.MuiPickersCalendarHeader-label,[aria-live]');
+    const headers = '.react-datepicker__current-month,.el-date-picker__header,.ant-picker-header-view,.ant-calendar-header,.phoenix-calendar-header,.phoenix-calendar-month-panel-header,.arco-picker-header,.t-date-picker__header,.n-date-panel-calendar__header,.n-date-panel-month__text,.flatpickr-current-month,.rdp-caption_label,.DayPicker-Caption,.MuiPickersCalendarHeader-label,[aria-live]';
+    const header = panel.querySelector(headers) || outer.querySelector(headers);
       const text = header?.textContent || '';
       const numeric = /(\d{4})\s*[-/.年]\s*(\d{1,2})/.exec(text);
       if (numeric) return { year: +numeric[1], month: +numeric[2] };
       const year = /\b\d{4}\b/.exec(text)?.[0];
-      const month = monthNames.findIndex(name => text.toLowerCase().includes(name));
-      return year && month >= 0 ? { year: +year, month: month + 1 } : null;
+      const month = monthNames.findIndex(name => text.toLowerCase().includes(name) || new RegExp(`\\b${name.slice(0, 3)}\\b`, 'i').test(text));
+      if (year && month >= 0) return { year: +year, month: month + 1 };
+      const yearControl = [...panel.querySelectorAll('select,input')].find(node => /year/i.test([node.name, node.getAttribute('aria-label'), node.parentElement?.parentElement?.className, node.closest('[class*="header-controller-year"]')?.className].join(' ')));
+      const yearText = /\d{4}/.exec(yearControl?.value || '')?.[0] || year;
+      const monthControl = panel.querySelector('[class*="header-controller-month"] input');
+      const numberedMonth = /\d{1,2}/.exec(monthControl?.value || '')?.[0] || /(\d{1,2})\s*月/.exec(text)?.[1];
+      return yearText ? { year: +yearText, month: numberedMonth ? +numberedMonth : null } : null;
     }
     function calendarDay(panel, date, target, allowNumber = false) {
       const exact = [...panel.querySelectorAll(`[title="${target}"],[data-date="${target}"],[aria-label="${target}"]`)].find(safeCell);
@@ -333,6 +360,11 @@
     async function setHeaders(panel, date, requery) {
       for (const part of ['year', 'month']) {
         check();
+        const custom = panel.querySelector(`.t-date-picker__header-controller-${part} input`);
+        if (custom) {
+          await fillChoice(custom, `${part === 'year' ? date.year : date.month}${part === 'year' ? '年' : '月'}`, { preserveParent: true });
+          panel = requery() || panel; continue;
+        }
         const node = [...panel.querySelectorAll('select,input')].find(node => safeCell(node)
           && new RegExp(part === 'year' ? 'year|年份|年' : 'month|月份|月', 'i').test(
             [node.className, node.name, node.getAttribute('aria-label'), node.getAttribute('title'), node.getAttribute('placeholder')].join(' ')));
@@ -354,13 +386,28 @@
     }
     async function navigateMonths(panel, date, requery) {
       let current = panelMonth(panel);
+      // Jump whole years before months, including birthdays decades away, under the same deadline.
+      for (let i = 0; i < 50 && current && current.year !== date.year; i++) {
+        check(); const previous = date.year < current.year;
+        let button = [...calendarView(panel).querySelectorAll(previous
+          ? '[class*="prev-year-btn"],[class*="prev-decade"],.ant-picker-header-super-prev-btn,[aria-label="Previous Year"],[aria-label="Previous year"],.d-arrow-left,.el-icon-d-arrow-left'
+          : '[class*="next-year-btn"],[class*="next-decade"],.ant-picker-header-super-next-btn,[aria-label="Next Year"],[aria-label="Next year"],.d-arrow-right,.el-icon-d-arrow-right')].find(safeNavigation);
+        button ||= calendarView(panel).querySelector(previous ? '.arco-icon-double-left' : '.arco-icon-double-right')?.closest('.arco-picker-header-icon');
+        button ||= panel.querySelector(previous ? '.n-date-panel-month__fast-prev' : '.n-date-panel-month__fast-next');
+        if (!button) break;
+        const before = current.year; button.click(); await sleep(80); panel = requery() || panel; current = panelMonth(panel);
+        if (!current || current.year === before) break;
+      }
+      if (!current?.month) return panel;
       if (!current || Math.abs((date.year - current.year) * 12 + date.month - current.month) > 18) return panel;
       for (let i = 0; i < 18 && current && (current.year !== date.year || current.month !== date.month); i++) {
         check();
         const previous = date.year * 12 + date.month < current.year * 12 + current.month;
-        const button = panel.querySelector(previous
-          ? '.ant-calendar-prev-month-btn,.ant-picker-header-prev-btn,.el-icon-arrow-left,.prev-month,.flatpickr-prev-month,.react-datepicker__navigation--previous,[aria-label="Previous Month"],[aria-label="Previous month"],[title="上个月"],[aria-label="上个月"]'
-          : '.ant-calendar-next-month-btn,.ant-picker-header-next-btn,.el-icon-arrow-right,.next-month,.flatpickr-next-month,.react-datepicker__navigation--next,[aria-label="Next Month"],[aria-label="Next month"],[title="下个月"],[aria-label="下个月"]');
+        let button = panel.querySelector(previous
+          ? '[class*="prev-month-btn"],.ant-picker-header-prev-btn,.el-icon-arrow-left,.prev-month,.flatpickr-prev-month,.react-datepicker__navigation--previous,[aria-label="Previous Month"],[aria-label="Previous month"],[title="上个月"],[aria-label="上个月"]'
+          : '[class*="next-month-btn"],.ant-picker-header-next-btn,.el-icon-arrow-right,.next-month,.flatpickr-next-month,.react-datepicker__navigation--next,[aria-label="Next Month"],[aria-label="Next month"],[title="下个月"],[aria-label="下个月"]');
+        button ||= calendarView(panel).querySelector(previous ? '.arco-icon-left' : '.arco-icon-right')?.closest('.arco-picker-header-icon');
+        button ||= panel.querySelector(previous ? '.n-date-panel-month__prev' : '.n-date-panel-month__next');
         if (!button || !safeNavigation(button)) break;
         const before = `${current.year}-${current.month}`;
         button.click(); await sleep(100); panel = requery() || panel; current = panelMonth(panel);
@@ -393,6 +440,7 @@
       if (!alreadyOpen || !panels(input, DATE_PANELS, before).length) input.click();
       await sleep(160);
       let panel = panels(input, DATE_PANELS, before)[0];
+      for (let i = 0; !panel && i < 5; i++) { await sleep(60); panel = panels(input, DATE_PANELS, before)[0]; }
       if (!panel) {
         const addon = fieldRoot(input).querySelector('[class*="calendar"],[class*="addon"],[class*="suffix"]');
         if (addon && addon !== input && !addon.querySelector('input')) { addon.click(); await sleep(160); }
@@ -400,6 +448,7 @@
       }
       if (!panel) return { filled: false, precision: datePrecision(input) };
       let precision = datePrecision(input, panel), target = formatDate(value, ['year', 'month'].includes(precision) ? precision : 'day');
+      hooks.trace?.({ stage: 'calendar-open', precision, current: panelMonth(panel) });
       const date = dateParts(value);
       if (!date) return { filled: false, precision };
       datePanels.set(input, panel);
@@ -412,24 +461,65 @@
         return Boolean(actual && actual.year === date.year && (precision === 'year' || actual.month === date.month)
           && (['year', 'month'].includes(precision) || actual.hasDay && actual.day === date.day));
       };
+      if (/n-date-panel--month(?:\s|$)/.test(panel.className || '')) {
+        let columns = [...panel.querySelectorAll('.n-date-panel-month-calendar__picker-col')];
+        let year;
+        for (let i = 0; i < 12; i++) {
+          check(); const years = leaves(columns[0], /^\d{4}$/); year = years.find(node => +node.textContent.trim() === date.year);
+          if (year) break;
+          const middle = years[Math.floor(years.length / 2)]; if (!middle) break;
+          const scroll = columns[0].querySelector('.n-scrollbar-container') || columns[0];
+          scroll.scrollTop += (date.year - +middle.textContent.trim()) * 40; await sleep(80);
+        }
+        if (!year) return { filled: false, precision: 'month', target };
+        year.scrollIntoView?.({ block: 'nearest' }); year.click(); await sleep(100); panel = requery() || panel;
+        columns = [...panel.querySelectorAll('.n-date-panel-month-calendar__picker-col')];
+        const month = columns[1] && leaves(columns[1], /^\d{1,2}$/).find(node => +node.textContent.trim() === date.month);
+        if (!month) return { filled: false, precision: 'month', target };
+        month.click(); await sleep(100); return { filled: await verify(), precision: 'month', target };
+      }
+      // Some popups (including Phoenix/rc-calendar) expose their own editable date input.
+      // Commit through that input's normal events; Enter is allowed only outside any form.
+      if (!pending) {
+        const editors = [...panel.querySelectorAll('input:not([type="hidden"])')].filter(node => visible(node) && !node.readOnly && !node.disabled
+          && node.type !== 'search' && node.getAttribute('role') !== 'combobox');
+        if (editors.length === 1) {
+          const editor = editors[0], formatted = formatDate(value, precision === 'month' ? 'month' : 'day');
+          write(editor, formatted); await sleep(100);
+          if (!editor.closest('form') && !editor.getAttribute('form')) {
+            editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+            editor.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+            await sleep(100);
+          }
+          const actual = dateParts(displayed(el), formatHint(input));
+          if (actual && actual.year === date.year && actual.month === date.month && (precision === 'month' || actual.hasDay && actual.day === date.day)) {
+            if (await verify()) return { filled: true, precision: precision === 'unknown' ? 'day' : precision, target };
+          }
+          panel = requery() || panel;
+        }
+      }
       if (precision !== 'month') {
         const exact = [...panel.querySelectorAll(`[title="${target}"],[data-date="${target}"],[aria-label="${target}"]`)].find(safeCell);
         if (exact) { exact.click(); return { filled: await verify(), precision: 'day', target }; }
       }
       panel = await setHeaders(panel, date, requery);
+      panel = await navigateMonths(panel, date, requery);
+      hooks.trace?.({ stage: 'calendar-navigated', precision, current: panelMonth(panel) });
       if (precision === 'day' || precision === 'unknown') {
         panel = await navigateMonths(panel, date, requery);
         const current = panelMonth(panel);
         const exact = calendarDay(panel, date, target, current?.year === date.year && current.month === date.month);
+        hooks.trace?.({ stage: 'calendar-day', found: Boolean(exact) });
         if (exact) { check(); exact.click(); return { filled: await verify(), precision: 'day', target }; }
       }
       // Year selection handles both standard picker headers and custom year/month lists.
-      const yearSelector = '.ant-calendar-year-select,.ant-picker-year-btn,[class*="year-select"],[class*="year-btn"],[class*="year-label"]';
-      const yearCells = () => leaves(panel, /^\d{4}年?$/).filter(node => !node.closest(yearSelector));
+      const yearSelector = '.ant-calendar-year-select,.ant-picker-year-btn,[class*="year-select"],[class*="year-btn"],[class*="year-label"],.el-date-picker__header-label,.arco-picker-header-label';
+      const yearCells = () => leaves(calendarView(panel), /^\d{4}年?$/).filter(node => !node.closest(yearSelector));
       let years = yearCells();
       let year = years.find(node => parseInt(node.textContent, 10) === date.year);
-      const yearButton = panel.querySelector(yearSelector);
-      if (yearButton && (!year || yearButton === year || yearButton.contains(year)) && safeCell(yearButton)) {
+      const yearButton = [...calendarView(panel).querySelectorAll(yearSelector), ...panel.querySelectorAll(yearSelector)]
+        .find(node => visible(node) && /^\d{4}\s*年?$/.test(node.textContent.trim()));
+      if (yearButton && panelMonth(panel)?.year !== date.year && (!year || yearButton === year || yearButton.contains(year)) && safeCell(yearButton)) {
         yearButton.click(); await sleep(120); panel = requery() || panel;
         years = yearCells(); year = years.find(node => parseInt(node.textContent, 10) === date.year);
       }
@@ -448,14 +538,14 @@
       const yearAlreadySelected = [...panel.querySelectorAll('select,input')].some(node => safeCell(node)
         && /year|年份|年/i.test([node.className, node.name, node.getAttribute('aria-label'), node.getAttribute('title')].join(' '))
         && parseInt(node.value, 10) === date.year);
-      if (!year && !yearAlreadySelected) return { filled: false, precision, target };
+      if (!year && !yearAlreadySelected && panelMonth(panel)?.year !== date.year) return { filled: false, precision, target };
       if (year) { check(); year.click(); await sleep(120); panel = requery() || panel; }
       if (precision === 'year') return { filled: await verify(), precision, target };
-      const monthPattern = /^(?:\d{1,2}月?|[一二三四五六七八九十]{1,3}月|january|february|march|april|may|june|july|august|september|october|november|december|jan\.?|feb\.?|mar\.?|apr\.?|jun\.?|jul\.?|aug\.?|sep\.?|oct\.?|nov\.?|dec\.?)$/i;
+      const monthPattern = /^(?:\d{1,2}\s*月?|[一二三四五六七八九十]{1,3}月|january|february|march|april|may|june|july|august|september|october|november|december|jan\.?|feb\.?|mar\.?|apr\.?|jun\.?|jul\.?|aug\.?|sep\.?|oct\.?|nov\.?|dec\.?)$/i;
       const monthButton = panel.querySelector('.ant-calendar-month-select,.ant-picker-month-btn,[class*="month-select"],[class*="month-btn"]');
       if (monthButton && safeCell(monthButton)) { check(); monthButton.click(); await sleep(100); panel = requery() || panel; }
       const monthGrid = precision === 'month' || panel.querySelector('.ant-picker-month-panel,.ant-calendar-month-panel,.el-month-table,[data-month]');
-      let months = leaves(panel, monthPattern).filter(node => monthGrid || !/^\d{1,2}$/.test(node.textContent.trim()));
+      let months = leaves(calendarView(panel), monthPattern).filter(node => monthGrid || !/^\d{1,2}$/.test(node.textContent.trim()));
       if (!months.length) {
         const button = panel.querySelector('.ant-calendar-month-select,.ant-picker-month-btn,[class*="month-select"],[class*="month-btn"]');
         if (button && safeCell(button)) { button.click(); await sleep(120); panel = requery() || panel; months = leaves(panel, monthPattern); }
@@ -492,7 +582,11 @@
       if (!day) return { filled: false, precision: 'day', target };
       day.click(); return { filled: await verify(), precision: 'day', target };
     }
-    return Object.freeze({ choiceSignals, fillChoice, fillCalendar, confirmCalendar, displayed, fieldRoot });
+    // A trusted click can arrive before the first polling tick discovers a portal.
+    function ownsTarget(el, target) {
+      return [...panels(el, CHOICE_PANELS), ...panels(el, DATE_PANELS)].some(panel => panel.contains(target));
+    }
+    return Object.freeze({ choiceSignals, fillChoice, fillCalendar, confirmCalendar, displayed, fieldRoot, ownsTarget });
   }
   globalThis.__resumeControls = Object.freeze({ create, optionScore, rankOptions, datePrecision, dateParts, formatDate, CHOICE_PANELS, DATE_PANELS });
 })();

@@ -23,6 +23,8 @@ export function domFixture() {
     get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
     set textContent(value) { this._text = value; this.children = []; }
     getAttribute(key) { return this.attrs[key] ?? null; }
+    setAttribute(key, value) { this.attrs[key] = String(value); }
+    removeAttribute(key) { delete this.attrs[key]; }
     contains(node) { return node === this || this.children.some(child => child.contains(node)); }
     append(...nodes) { for (const node of nodes) { node.remove(); node.parentElement = this; this.children.push(node); } }
     remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(node => node !== this); this.parentElement = null; }
@@ -36,11 +38,14 @@ export function domFixture() {
         const tag = /^[A-Za-z][A-Za-z0-9-]*/.exec(value)?.[0];
         if (tag && this.tagName !== tag.toUpperCase()) return false;
         for (const match of value.matchAll(/\.([\w-]+)/g)) if (!this.className.split(' ').includes(match[1])) return false;
-        for (const match of value.matchAll(/\[([\w-]+)(?:(\*=|=)"?([^\]"]*)"?)?\]/g)) {
+        for (const match of value.matchAll(/\[([\w-]+)(?:(\*=|\$=|\^=|~=|=)"?([^\]"]*)"?)?\]/g)) {
           const actual = this.getAttribute(match[1]);
           if (actual === null) return false;
           if (match[2] === '=' && actual !== match[3]) return false;
           if (match[2] === '*=' && !actual.includes(match[3])) return false;
+          if (match[2] === '$=' && !actual.endsWith(match[3])) return false;
+          if (match[2] === '^=' && !actual.startsWith(match[3])) return false;
+          if (match[2] === '~=' && !actual.split(/\s+/).includes(match[3])) return false;
         }
         return Boolean(value === '*' || tag || value.startsWith('[') || value.startsWith('.'));
       });

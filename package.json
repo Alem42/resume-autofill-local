@@ -1,10 +1,27 @@
 {
   "name": "resume-autofill-local",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "test:browser": "node tests/browser/run.mjs"
+    "test:browser": "node tests/browser/run.mjs",
+    "test:components": "node tests/browser/components-run.mjs",
+    "inspect:companies": "node tests/browser/inspect-companies.mjs"
+  },
+  "devDependencies": {
+    "@arco-design/web-react": "2.66.18",
+    "antd": "6.6.6",
+    "element-plus": "2.14.7",
+    "element-ui": "2.15.14",
+    "esbuild": "0.28.2",
+    "moment": "2.31.0",
+    "naive-ui": "2.45.3",
+    "rc-calendar": "9.15.11",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tdesign-vue-next": "1.20.10",
+    "vue": "3.5.44",
+    "vue2": "npm:vue@2.7.16"
   }
 }

@@ -167,7 +167,7 @@ test('未知总量不画百分比，填写进度分开显示处理、成功和�
   f.setCurrent({ status: 'applying', progress: { stage: 'applying', done: 8, total: 20, filled: 6, skipped: 2 } }); await f.refresh();
   assert.equal(f.nodes.get('activity-progress').value, 8);
   assert.match(f.nodes.get('activity-counter').textContent, /8 \/ 20/);
-  assert.match(f.nodes.get('activity-counts').textContent, /已填写 6 · 需手填 2/);
+  assert.match(f.nodes.get('activity-counts').textContent, /已填写 6 · 已跳过 2/);
   f.setCurrent({ status: 'completed', excludedDates: 9, result: { filled: 6, skipped: 14, outcomes: [] } }); await f.refresh();
   assert.equal(f.nodes.get('activity-panel').hidden, true); assert.equal(f.nodes.get('completion').hidden, false);
   assert.equal(f.nodes.get('result-filled').textContent, '6'); assert.equal(f.nodes.get('result-skipped').textContent, '14');
@@ -190,4 +190,15 @@ test('重新打开结果页仍使用区块、条目和字段名称展示失败�
     fieldLabels: [{ fieldId: 'F23', label: '学校名称', section: 'education', recordIndex: 1 }] });
   assert.match(f.nodes.get('review-results').textContent, /教育经历 · 第 2 条 \/ 学校名称/);
   assert.match(f.nodes.get('review-results').textContent, /超时/);
+});
+
+test('手动接管作为已保留显示，不计入待补填且不会提示部分失败', async () => {
+  const f = await confirmation({ status: 'completed', result: { filled: 1, skipped: 1,
+    outcomes: [{ fieldId: 'F0', status: 'skipped', reason: 'manual_edit' }, { fieldId: 'F1', status: 'filled' }] },
+    fieldLabels: [{ fieldId: 'F0', label: '学校名称', section: 'education', recordIndex: 0 }] });
+  assert.equal(f.nodes.get('result-filled').textContent, '1');
+  assert.equal(f.nodes.get('result-skipped').textContent, '0');
+  assert.equal(f.nodes.get('completion-title').textContent.includes('部分'), false);
+  assert.match(f.nodes.get('completion-description').textContent, /手动填写的 1 项/);
+  assert.match(f.nodes.get('review-results').textContent, /学校名称：已保留你的手动填写/);
 });

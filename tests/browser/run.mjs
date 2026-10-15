@@ -1,7 +1,7 @@
 // Dependency-free Chromium DOM integration tests. No real user profile, API or recruiting site.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, mkdtemp, access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { resolve, dirname, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,7 +62,7 @@ async function runCase(variant, includeDates) {
   if (variant === 'stress') profile = normalizeProfile({ basic: { ...fixtureProfile.basic, availableDate: '2027-07-01' },
     education: [{ school: '演示拒绝学校' }], interests: '阅读', selfEvaluation: fixtureProfile.selfEvaluation });
   const readState = () => controller.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, confirmSender);
-  const api = { runtime: { id, getURL: extensionURL, getManifest: () => ({ version: '2.6.0' }) },
+  const api = { runtime: { id, getURL: extensionURL, getManifest: () => ({ version: '2.7.0' }) },
     storage: { local: storage({ schemaVersion: 2, profile, settings: { model: DEFAULT_MODEL, rememberKey: false } }), session: storage({ secret: 'FICTIONAL_TEST_KEY' }) },
     tabs: { query: async () => [{ id: 1, url, status: 'complete' }], get: async () => ({ id: 1, url, status: 'complete' }),
       sendMessage: async (_, message) => run(`__labSend(${JSON.stringify(message)})`) },
@@ -86,17 +86,28 @@ async function runCase(variant, includeDates) {
   uiState = await readState();
   console.log(`[${variant}] Recognized ${uiState.diagnostic.counts.fields}, matched ${uiState.mappings.length}, date fields excluded ${uiState.excludedDates}`);
   await uiScreens('preview', uiState);
-  let last = -1, pollError, sampleProgress;
-  timer = setInterval(async () => { try {
+  let last = -1, pollError, sampleProgress, polling = false, currentPoll = Promise.resolve();
+  const relayProgress = async () => {
     const messages = await run('__labMessages.splice(0)');
     for (const message of messages) if (message.type === 'FILL_PROGRESS') {
-      await controller.handle(message, pageSender);
+      try { await controller.handle(message, pageSender); }
+      catch (error) {
+        // This bridge batches messages every 400 ms. A queued progress packet may
+        // arrive after APPLY completed; production also rejects and ignores it.
+        if (error.message === '填写已停止' && (await readState()).status === 'completed') continue;
+        throw error;
+      }
       if (!sampleProgress && message.done > 0) sampleProgress = { ...message, stage: 'applying', currentField: uiState.mappings.find(mapping => mapping.fieldId === message.currentFieldId)?.fieldLabel || '' };
       if (message.done >= last + 8) { last = message.done; console.log(`[${variant}] processed ${message.done}/${message.total}, filled ${message.filled}, skipped ${message.skipped}`); }
     }
-  } catch (error) { pollError = error; } }, 400);
+  };
+  timer = setInterval(() => {
+    if (polling) return;
+    polling = true; currentPoll = relayProgress().catch(error => { pollError = error; }).finally(() => { polling = false; });
+  }, 400);
   const result = await controller.handle({ type: 'APPLY_FIELDS', requestId: flow.requestId, fieldIds: uiState.mappings.map(mapping => mapping.fieldId) }, confirmSender);
   clearInterval(timer); timer = null;
+  await currentPoll;
   const snapshot = await evaluate(page.sessionId, 'lab.snapshot()');
   await sleep(500);
   assert.deepEqual(await evaluate(page.sessionId, 'lab.snapshot()'), snapshot, 'Late browser writes continued after completion');
@@ -147,7 +158,7 @@ try {
     try {
       const path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
       if (path === '/__lab-worker.js') {
-        res.setHeader('Content-Type', 'text/javascript'); res.end(`globalThis.chrome={runtime:{getManifest:()=>({version:'2.6.0'}),sendMessage:async()=>(${JSON.stringify(uiState)})}};`); return;
+        res.setHeader('Content-Type', 'text/javascript'); res.end(`globalThis.chrome={runtime:{getManifest:()=>({version:'2.7.0'}),sendMessage:async()=>(${JSON.stringify(uiState)})}};`); return;
       }
       const file = resolve(root, '.' + path); if (!file.startsWith(root + sep)) throw new Error('Invalid path');
       let body = await readFile(file);
@@ -159,7 +170,7 @@ try {
   const candidates = [process.env.BROWSER_BIN, 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/chromium', '/usr/bin/google-chrome'].filter(Boolean);
   let binary; for (const candidate of candidates) { try { await access(candidate); binary = candidate; break; } catch {} }
   if (!binary) throw new Error('Chromium not found; set BROWSER_BIN to your Edge/Chrome executable');
-  userData = resolve(output, `browser-${process.pid}`);
+  userData = await mkdtemp(resolve(output, 'browser-'));
   browser = spawn(binary, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${userData}`, 'about:blank'], { windowsHide: true, stdio: 'ignore' });
   let socketURL;
   await until(async () => { try { const [port, path] = (await readFile(resolve(userData, 'DevToolsActivePort'), 'utf8')).trim().split(/\r?\n/); socketURL = `ws://127.0.0.1:${port}${path}`; return true; } catch { return false; } }, 'browser debugger');

@@ -597,8 +597,10 @@ export function createController(api, fetchApi = globalThis.fetch) {
             await putFlow(flow);
             const config = await settings();
             try {
+              const manual = new Set((result.outcomes || []).filter(item => item.reason === 'manual_edit').map(item => item.fieldId));
               result.reviews = await audit(flow, config, selectedSources(profileSources(config.profile), flow.sourceIds),
-                flow.mappings, result.readback, 'after');
+                flow.mappings.filter(mapping => !manual.has(mapping.fieldId)),
+                Array.isArray(result.readback) ? result.readback.filter(item => !manual.has(item.fieldId)) : result.readback, 'after');
             } catch (error) {
               await isCurrent(flow, 'auditing');
               result.reviewError = error.message || '填写后 AI 校对未完成，请人工检查';
@@ -614,10 +616,13 @@ export function createController(api, fetchApi = globalThis.fetch) {
             const ids = new Set(flow.fields.map(field => field.id));
             flow.diagnostic.outcomes = (result.outcomes || []).filter(item => ids.has(item.fieldId))
               .map(item => ({ fieldId: item.fieldId, status: item.status === 'filled' ? 'filled' : 'skipped',
-                ...(['existing_value', 'field_changed', 'selection_not_committed', 'component_refused', 'range_requires_both', 'field_timeout', 'date_disabled', 'empty_value'].includes(item.reason) ? { reason: item.reason } : {}),
+                ...(['existing_value', 'field_changed', 'selection_not_committed', 'component_refused', 'range_requires_both', 'field_timeout', 'date_disabled', 'empty_value', 'manual_edit'].includes(item.reason) ? { reason: item.reason } : {}),
                 ...(typeof item.dropdownDetected === 'boolean' ? { dropdownDetected: item.dropdownDetected } : {}),
                 ...(['exact', 'alias', 'similar', 'ai', 'preference'].includes(item.optionMatch) ? { optionMatch: item.optionMatch } : {}),
-                ...(['year', 'month', 'day'].includes(item.datePrecision) ? { datePrecision: item.datePrecision } : {}) }));
+                ...(['year', 'month', 'day'].includes(item.datePrecision) ? { datePrecision: item.datePrecision } : {}),
+                ...(['choice', 'calendar-open', 'calendar-navigated', 'calendar-day'].includes(item.adapterStage) ? { adapterStage: item.adapterStage } : {}),
+                ...(Number.isInteger(item.panelsSeen) && item.panelsSeen >= 0 && item.panelsSeen <= 1000 ? { panelsSeen: item.panelsSeen } : {}),
+                ...(Number.isInteger(item.optionsSeen) && item.optionsSeen >= 0 && item.optionsSeen <= 10000 ? { optionsSeen: item.optionsSeen } : {}) }));
             await api.storage.session.set({ lastDiagnostic: flow.diagnostic });
           }
           delete flow.mappings;
