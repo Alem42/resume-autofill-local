@@ -14,7 +14,7 @@
   let debounceTimer = null;
   const fieldRegistry = new Map();
   const MAX_FIELDS = 400;
-  const CONTENT_VERSION = '2.7.0';
+  const CONTENT_VERSION = '2.8.0';
   const FIELD_TIMEOUT_MS = 5000;
   const clockNow = () => globalThis.performance?.now() ?? Date.now();
   let fieldOperation = null;
@@ -22,6 +22,7 @@
   const manualFields = new Set();
   let lastManualEditAt = 0;
   let nativeActivation = false;
+  let manualInteraction = null;
   let clearActiveField = () => {};
   let optionAssistance = false;
   const sectionAgent = globalThis.__resumeSections;
@@ -29,6 +30,8 @@
   const componentControls = controlRules.create({ visible: isVisible, sleep, label: getLabelText, write: writeSearchValue,
     close: closeOpenPanel, check: checkOperation, resolveOption: resolveOption, canResolve: () => optionAssistance,
     claimPanel: panel => fieldOperation?.panels.add(panel),
+    activate: action => { nativeActivation = true; try { action(); } finally { nativeActivation = false; } },
+    beforeOpen: pauseForOtherManualChoice,
     trace: info => { if (fieldOperation) { const diagnostic = fieldOperation.diagnostic;
       diagnostic.adapterStage = info.stage;
       if (Number.isInteger(info.panels)) diagnostic.panelsSeen = info.panels;
@@ -269,8 +272,18 @@
 
   function sectionHooks(token = activeScanToken) {
     return { text: readLabelText, label: getLabelText, visible: isVisible,
-      elements: () => scanFieldElements().filter(eligibleElement), sleep,
+      elements: () => scanFieldElements().filter(eligibleElement).filter(el => !experienceGate(el)), sleep,
+      async openGate(root) {
+        const gates = scanFieldElements().filter(el => root.contains(el) && eligibleElement(el) && experienceGate(el));
+        if (gates.length !== 1) return false;
+        const gate = gates[0];
+        return gate.tagName === 'SELECT' ? fillNativeSelect(gate, '是') : (await componentControls.fillChoice(gate, '是')).filled;
+      },
       check() { if (!activeScanToken || activeScanToken !== token) throw new Error('操作已停止'); } };
+  }
+  function experienceGate(el) {
+    return /^(?:点击添加|是否(?:有|具有|具备)(?:工作|实习|项目|校园|培训|志愿)(?:经历|经验))$/.test(getLabelText(el).replace(/[：:*＊\s]/g, ''))
+      && globalThis.__resumeSemantics.repeated.includes(sectionAgent.scope(el, { text: readLabelText, label: getLabelText, visible: isVisible }).section);
   }
   function collectFields() {
     manualFields.clear();
@@ -278,7 +291,7 @@
     excludedDates = 0;
     fieldRegistry.clear();
     const collected = new Set();
-    const elements = scanFieldElements().filter(eligibleElement);
+    const elements = scanFieldElements().filter(eligibleElement).filter(el => !experienceGate(el));
     fieldContexts = sectionAgent.inspect(elements, sectionHooks()).fields;
     for (const el of elements) {
       addField(el, collected, fields);
@@ -486,6 +499,8 @@
   }
   function splitDateInfo(el) {
     if (['date', 'month'].includes(el.type)) return null;
+    if (el.tagName !== 'SELECT' && (['data-format', 'data-date-format', 'format'].some(key => /y{4}/i.test(el.getAttribute(key) || ''))
+      || el.closest('.ant-picker,.el-date-editor,.arco-picker,.t-date-picker,.n-date-picker,.phoenix-date-picker'))) return null;
     const unit = value => /year|年份|(?:^|[^月日])年$|^yyyy$/i.test(value) ? 'year'
       : /month|月份|^月$|^mm$/i.test(value) ? 'month'
       : /(?:^|[_\s-])day(?:$|[_\s-])|日期中的日|^日$|^dd$/i.test(value) || /Day(?:\s|$)/.test(value) ? 'day' : null;
@@ -639,6 +654,7 @@
       if (!activeScanToken || activeScanToken !== batchToken) throw new Error('填写已停止');
       const mapping = ordered[i];
       if (handled.has(mapping.fieldId)) continue;
+      await waitForManualChoice();
       while (activeScanToken && lastManualEditAt && clockNow() - lastManualEditAt < 600) await sleep(100);
       reportProgress(mapping.fieldId);
       try {
@@ -678,7 +694,7 @@
               const precision = response.precisions[index];
               if (['month', 'day'].includes(precision)) fieldRegistry.get(item.fieldId).datePrecision = precision;
               outcomes.push({ fieldId: item.fieldId, status: success ? 'filled' : 'skipped',
-                ...(success ? {} : { reason: response.manual ? 'manual_edit' : response.timeout ? 'field_timeout' : 'selection_not_committed' }),
+                ...(success ? {} : { reason: response.manual ? 'manual_edit' : response.missingDatePart ? 'missing_date_part' : response.timeout ? 'field_timeout' : 'selection_not_committed' }),
                 ...(['year', 'month', 'day'].includes(precision) ? { datePrecision: precision } : {}) });
             });
             if (success) { count += 2; range.inputs.forEach(highlightField); }
@@ -696,7 +712,7 @@
           if (filled && detail.dropdown) fieldRegistry.get(mapping.fieldId).readSelectedLabel = true;
           if (filled) { highlightField(el); count++; }
           outcomes.push({ fieldId: mapping.fieldId, status: filled ? 'filled' : 'skipped',
-            ...(filled ? {} : { reason: detail.manual ? 'manual_edit' : detail.timeout ? 'field_timeout' : 'selection_not_committed' }),
+            ...(filled ? {} : { reason: detail.manual ? 'manual_edit' : detail.missingDatePart ? 'missing_date_part' : detail.timeout ? 'field_timeout' : 'selection_not_committed' }),
             ...(!filled && detail.adapterStage ? { adapterStage: detail.adapterStage,
               ...(Number.isInteger(detail.panelsSeen) ? { panelsSeen: detail.panelsSeen } : {}),
               ...(Number.isInteger(detail.optionsSeen) ? { optionsSeen: detail.optionsSeen } : {}) } : {}),
@@ -725,6 +741,7 @@
       : { ...(typeof result === 'object' && result ? result : { filled: false }), ...fieldOperation.diagnostic }; }
     catch (error) {
       if (error.code === 'MANUAL_EDIT') return { filled: false, manual: true, precisions: [] };
+      if (error.code === 'MISSING_DATE_PART') return { filled: false, missingDatePart: true, precisions: [] };
       if (error.code !== 'FIELD_TIMEOUT') throw error;
       // All awaited continuations have unwound. Do not race a live DOM-writing task against a timer.
       fireCloseEvents(el, el, true);
@@ -792,8 +809,10 @@
     let v = String(value);
     const date = /^(\d{4})[-/.年](\d{1,2})(?:[-/.月](\d{1,2}))?月?日?$/.exec(v.trim());
     if (date && el.type === 'month') v = `${date[1]}-${date[2].padStart(2, '0')}`;
-    // A date control requires a day; month-only information uses the first day for that widget.
-    if (date && el.type === 'date') v = `${date[1]}-${date[2].padStart(2, '0')}-${(date[3] || '01').padStart(2, '0')}`;
+    if (el.type === 'date' && (!date || !date[3])) {
+      const error = new Error('资料缺少网页要求的日期'); error.code = 'MISSING_DATE_PART'; throw error;
+    }
+    if (date && el.type === 'date') v = `${date[1]}-${date[2].padStart(2, '0')}-${date[3].padStart(2, '0')}`;
     const proto = el.tagName.toLowerCase() === 'textarea'
       ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
@@ -1499,19 +1518,48 @@
     if (!target?.getAttribute) return;
     const clicking = event.type === 'pointerdown' || event.type === 'click';
     const activeElement = fieldRegistry.get(fieldOperation?.fieldId)?.element;
-    const inPanel = fieldOperation && ([...fieldOperation.panels].some(panel => panel.contains(target))
+    const inManualPanel = manualInteraction?.el?.isConnected && (manualInteraction.panels
+      ? manualInteraction.panels.some(panel => panel.contains(target)) : componentControls.ownsTarget(manualInteraction.el, target));
+    const inPanel = !inManualPanel && fieldOperation && ([...fieldOperation.panels].some(panel => panel.contains(target))
       || activeElement?.isConnected && componentControls.ownsTarget(activeElement, target));
-    if (clicking && !inPanel && target.type !== 'radio') return;
     const ids = [];
     for (const [id, record] of fieldRegistry) {
       const el = record.element;
       if (el === target || el.contains(target) || componentControls.fieldRoot(el).contains(target)
         || el.type === 'radio' && radioInfo(el)?.options.includes(target)) ids.push(id);
     }
+    if (inManualPanel) for (const [id, record] of fieldRegistry) if (record.element === manualInteraction.el) ids.push(id);
     if (inPanel) ids.push(...fieldOperation.fieldIds);
+    const widget = ids.map(id => fieldRegistry.get(id)).find(record => ['custom-dropdown', 'custom-interactive', 'school-autocomplete', 'custom-datepicker'].includes(record?.componentType));
+    if (clicking && !inPanel && !inManualPanel && target.type !== 'radio' && !widget) return;
     if (!ids.length) { if (!clicking) { manualNodes.add(target); manualNodes.add(componentControls.fieldRoot(target)); } return; }
     lastManualEditAt = clockNow();
+    if (widget && manualInteraction?.el !== widget.element) manualInteraction = { el: widget.element, panels: null };
     for (const id of ids) { manualFields.add(id); const el = fieldRegistry.get(id)?.element; if (el) manualNodes.add(el); }
+  }
+  async function waitForManualChoice() {
+    let badge;
+    try {
+      while (activeScanToken && manualInteraction?.el?.isConnected) {
+        const panels = manualInteraction.panels ||= componentControls.openPanels(manualInteraction.el).slice(0, 1);
+        const remaining = panels.filter(panel => panel.isConnected && isVisible(panel));
+        if (!remaining.length) { manualInteraction = null; break; }
+        if (!badge && document.createElement) {
+          badge = document.createElement('div'); badge.setAttribute('data-resume-autofill-paused', 'true'); badge.setAttribute('role', 'status');
+          badge.textContent = '等待你完成手动选择；确认或关闭下拉 / 日历后继续。也可在确认窗口中止填写。';
+          Object.assign(badge.style, { position: 'fixed', bottom: '18px', right: '18px', maxWidth: '380px', padding: '12px 16px', borderRadius: '8px', background: '#815b18', color: 'white', font: '13px sans-serif', zIndex: '2147483647', pointerEvents: 'none' });
+          document.body.append(badge);
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    } finally { badge?.remove(); }
+  }
+  async function pauseForOtherManualChoice() {
+    const operation = fieldOperation, current = fieldRegistry.get(operation?.fieldId)?.element;
+    if (!operation || !manualInteraction?.el || manualInteraction.el === current) return;
+    const started = clockNow();
+    await waitForManualChoice();
+    if (fieldOperation === operation) operation.deadline += clockNow() - started;
   }
   for (const type of ['beforeinput', 'input', 'change', 'pointerdown', 'click']) document.addEventListener?.(type, userEdited, true);
   function highlightField(el) {
@@ -1569,8 +1617,9 @@
     const operation = fieldOperation;
     checkOperation();
     const wait = operation ? Math.max(0, Math.min(ms, operation.deadline - clockNow())) : ms;
-    return new Promise(resolve => setTimeout(resolve, wait)).then(() => {
+    return new Promise(resolve => setTimeout(resolve, wait)).then(async () => {
       if (!activeScanToken || token !== activeScanToken) throw new Error('填写已停止');
+      await pauseForOtherManualChoice();
       if (operation) checkOperation();
       if (operation && clockNow() >= operation.deadline) {
         const error = new Error('字段填写超时'); error.code = 'FIELD_TIMEOUT'; throw error;
@@ -1601,6 +1650,8 @@
   }
   function stopAll() {
     clearActiveField();
+    manualInteraction = null;
+    document.querySelector('[data-resume-autofill-paused]')?.remove();
     activeScanToken = null;
     optionAssistance = false;
     prepared = false;

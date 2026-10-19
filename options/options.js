@@ -1,5 +1,6 @@
 import { PROFILE_SCHEMA, TEXT_FIELDS, BOOLEAN_KEYS, MAX_ENTRIES, normalizeProfile, syncHighestEducation } from '../shared/profile.js';
 import { send, element, status, onClick, downloadJSON } from '../shared/ui.js';
+import { enhanceChoice, dateFields } from './fields.js';
 
 const containers = new Map();
 const longFields = new Set(['description', 'awards', 'publications', 'responsibilities', 'achievements', 'coreCourses', 'authors', 'leavingReason']);
@@ -18,6 +19,10 @@ function field(section, key, label, value = '') {
   input.autocomplete = 'off';
   if (/Date$|birthday/.test(key)) input.placeholder = section === 'education' ? 'YYYY-MM-DD，如 2024-09-15；结束可写至今' : '如：2024-06-15；结束时间可写“至今”';
   wrapper.append(input);
+  if (!boolean && !longFields.has(key)) {
+    if (/Date$|birthday|^date$/.test(key)) dateFields(input, key);
+    else enhanceChoice(input, section, key);
+  }
   return wrapper;
 }
 function record(section, schema, data = {}) {
@@ -36,6 +41,7 @@ function record(section, schema, data = {}) {
     const actions = element('div', 'row');
     for (const [label, direction] of [['上移', -1], ['下移', 1]]) {
       const move = element('button', '', label); move.type = 'button';
+      move.dataset.move = direction < 0 ? 'up' : 'down';
       move.addEventListener('click', event => {
         if (!event.isTrusted) return;
         const sibling = direction < 0 ? node.previousElementSibling : node.nextElementSibling;
@@ -63,6 +69,7 @@ function render(profile) {
     details.append(element('summary', '', schema.title));
     const entries = element('div');
     if (schema.multiple) {
+      details.append(element('p', 'muted', '按这里的顺序对应网页条目；可上移、下移，调整后请保存。'));
       for (const data of profile[section]) entries.append(record(section, schema, data));
       const add = element('button', '', `添加${schema.title}`);
       add.type = 'button';
@@ -101,7 +108,9 @@ function render(profile) {
 function updateOrder(section) {
   if (!PROFILE_SCHEMA[section].multiple) return;
   [...containers.get(section).children].forEach((node, index) => {
-    node.querySelector('.entry-header strong').textContent = `第 ${index + 1} 条${PROFILE_SCHEMA[section].title}`;
+    node.querySelector('.entry-header').querySelector('strong').textContent = `第 ${index + 1} 条${PROFILE_SCHEMA[section].title}`;
+    node.querySelector('[data-move="up"]').disabled = index === 0;
+    node.querySelector('[data-move="down"]').disabled = index === containers.get(section).children.length - 1;
   });
 }
 function collect() {

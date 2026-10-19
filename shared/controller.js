@@ -616,11 +616,11 @@ export function createController(api, fetchApi = globalThis.fetch) {
             const ids = new Set(flow.fields.map(field => field.id));
             flow.diagnostic.outcomes = (result.outcomes || []).filter(item => ids.has(item.fieldId))
               .map(item => ({ fieldId: item.fieldId, status: item.status === 'filled' ? 'filled' : 'skipped',
-                ...(['existing_value', 'field_changed', 'selection_not_committed', 'component_refused', 'range_requires_both', 'field_timeout', 'date_disabled', 'empty_value', 'manual_edit'].includes(item.reason) ? { reason: item.reason } : {}),
+                ...(['existing_value', 'field_changed', 'selection_not_committed', 'component_refused', 'range_requires_both', 'field_timeout', 'date_disabled', 'empty_value', 'manual_edit', 'missing_date_part'].includes(item.reason) ? { reason: item.reason } : {}),
                 ...(typeof item.dropdownDetected === 'boolean' ? { dropdownDetected: item.dropdownDetected } : {}),
                 ...(['exact', 'alias', 'similar', 'ai', 'preference'].includes(item.optionMatch) ? { optionMatch: item.optionMatch } : {}),
                 ...(['year', 'month', 'day'].includes(item.datePrecision) ? { datePrecision: item.datePrecision } : {}),
-                ...(['choice', 'calendar-open', 'calendar-navigated', 'calendar-day'].includes(item.adapterStage) ? { adapterStage: item.adapterStage } : {}),
+                ...(['choice', 'choice-pending', 'choice-confirmed', 'calendar-open', 'calendar-year', 'calendar-month', 'calendar-navigated', 'calendar-day'].includes(item.adapterStage) ? { adapterStage: item.adapterStage } : {}),
                 ...(Number.isInteger(item.panelsSeen) && item.panelsSeen >= 0 && item.panelsSeen <= 1000 ? { panelsSeen: item.panelsSeen } : {}),
                 ...(Number.isInteger(item.optionsSeen) && item.optionsSeen >= 0 && item.optionsSeen <= 10000 ? { optionsSeen: item.optionsSeen } : {}) }));
             await api.storage.session.set({ lastDiagnostic: flow.diagnostic });

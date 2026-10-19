@@ -14,8 +14,7 @@ console.log('Bundling pinned real UI components (test dependencies only)...');
 for (const [key, file] of Object.entries(entries)) await build({ entryPoints: [resolve(root, 'tests/browser', file)], outfile: resolve(output, `${key}.js`), bundle: true,
   platform: 'browser', format: 'iife', minify: false, define: { 'process.env.NODE_ENV': '"production"', __VUE_OPTIONS_API__: 'true', __VUE_PROD_DEVTOOLS__: 'false', __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: 'false' },
   ...(key === 'element2' ? { alias: { vue: 'vue2' } } : {}), loader: { '.woff': 'file', '.ttf': 'file', '.eot': 'file', '.svg': 'file' }, logLevel: 'error' });
-const rcCSS = (await readFile(resolve(root, 'node_modules/rc-calendar/assets/index.css'), 'utf8')).replaceAll('rc-calendar', 'phoenix-calendar');
-await writeFile(resolve(output, 'phoenix.css'), rcCSS + '\n.phoenix-calendar{position:fixed;top:110px;left:360px;z-index:3000}.phoenix-date-picker input{width:100%;padding:10px;border:1px solid #ccc}');
+// Keep the real package CSS emitted by esbuild.
 const css = 'body{font:14px "Segoe UI","Microsoft YaHei",sans-serif;background:#f7f9fc;padding:24px;max-width:850px;margin:auto}section{background:white;border:1px solid #dbe1eb;padding:20px;margin:20px 0;border-radius:12px}.form-item{display:grid;grid-template-columns:120px 1fr;align-items:center;margin:20px 0;min-height:40px}.form-item>label{font-weight:600}.form-item>div{min-width:0}.form-item input{font-size:14px}pre{white-space:pre-wrap}';
 const server = createServer(async (req, res) => { try {
   const url = new URL(req.url, 'http://localhost');
@@ -115,7 +114,8 @@ async function manualPopupCase(kind, overwrite) {
   const manualValue = date ? '2001-02-03' : '演示星河学院';
   if (date) {
     await until(() => browser.evaluate(page, 'Boolean(document.querySelector(".phoenix-calendar-input"))'), 'popup date editor');
-    await browser.type(page, '.phoenix-calendar-input', manualValue);
+    // The public Phoenix package's editor uses YYYY/MM/DD, unlike its outer field.
+    await browser.type(page, '.phoenix-calendar-input', manualValue.replaceAll('-', '/'));
     await browser.command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, page.sessionId);
     await browser.command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, page.sessionId);
   } else {

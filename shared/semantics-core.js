@@ -5,8 +5,9 @@
     internships: '实习经历', employment: '实习 / 工作经历', projects: '项目经历', awards: '获奖信息',
     campus: '校园经历', research: '科研经历', publications: '论文发表', patents: '专利信息',
     languageCertificates: '语言考试', professionalCertificates: '资格证书', qualifications: '语言 / 证书 / 技能', training: '培训经历',
-    volunteer: '志愿经历', portfolio: '作品集', jobIntention: '求职意向', other: '其他信息', unknown: '未识别区块' });
+    volunteer: '志愿经历', portfolio: '作品集', family: '家庭情况', jobIntention: '求职意向', other: '其他信息', unknown: '未识别区块' });
   const patterns = {
+    family: /家庭(?:情况|信息|成员)|家庭及社会关系|主要社会关系|亲属(?:关系|信息)|family(?: information| members)?/i,
     education: /教育(?:经历|背景|信息)|学习经历|学历(?:信息|学位)|education|academic background/i,
     internships: /实习(?:经历|经验|信息)|internship/i,
     work: /工作(?:经历|经验|信息)|任职经历|职业经历|work experience|employment history/i,
@@ -37,6 +38,7 @@
   function headingSection(text) {
     const value = compact(text).replace(/\d+条?$|添加|新增|展开|收起|编辑/g, '').replace(/(?:选填|必填|非必填)$/, '');
     const aliases = {
+      family: /^(家庭情况|家庭信息|家庭成员|家庭成员信息|家庭及社会关系|主要社会关系|亲属关系|亲属信息|family|familymembers|familyinformation)$/,
       basic: /^(基本信息|基本资料|个人信息|个人资料|联系方式|personalinformation|contactinformation)$/,
       education: /^(教育经历|教育背景|教育信息|学历信息|学历学位|学习经历|education|academicbackground)$/,
       work: /^(工作经历|工作经验|任职经历|职业经历|workexperience|employmenthistory)$/,
@@ -55,14 +57,16 @@
       volunteer: /^(志愿经历|志愿活动|公益经历|公益活动|volunteer)$/,
       portfolio: /^(作品集|作品展示|作品信息|portfolio)$/,
       jobIntention: /^(求职意向|应聘意向|工作意向|jobpreference|careerobjective)$/,
-      other: /^(其他信息|技能|专业技能|自我评价|兴趣爱好|otherinformation)$/
+      other: /^(其他信息|技能|专业技能|自我评价|个人评价|自我介绍|个人简介|自述|兴趣爱好|otherinformation)$/
     };
     return Object.entries(aliases).find(([, pattern]) => pattern.test(value))?.[0] || 'unknown';
   }
   function inferSection(text) {
     const value = compact(text).replace(/^(?:请输入|请填写|请选择)/, '');
     if (value === '最高学历') return 'basic';
-    if (/^(专业技能|技能|自我评价|自我介绍|兴趣爱好|补充信息|skills|selfevaluation)$/.test(value)) return 'other';
+    if (/^(专业技能|技能|自我评价|个人评价|自我介绍|个人简介|自述|综合评价|兴趣爱好|补充信息|skills|selfevaluation)$/.test(value)) return 'other';
+    if (/家人姓名|家庭成员姓名|亲属姓名|与本人关系|家庭称谓/.test(value)) return 'family';
+    if (/生源地|健康状况|是否(?:为)?本公司员工/.test(value)) return 'basic';
     if (/预计毕业|预期毕业|expectedgraduation/.test(value)) return 'basic';
     if (/^(学校|院校|university|school)$/.test(value) || /学校名称|毕业院校|就读院校|schoolname|education|学历|学位|所学专业/.test(value)) return 'education';
     if (/实习单位|实习公司|internship/.test(value)) return 'internships';
@@ -77,6 +81,7 @@
     return 'unknown';
   }
   const anchors = {
+    family: /^(家人姓名|姓名|成员姓名|家庭成员姓名|亲属姓名|family.?name|name)$/i,
     education: /^(学校|学校名称|毕业院校|就读院校|院校|school|schoolname|university)$/i,
     work: /^(公司|公司名称|工作单位|单位名称|company|companyname|employer)$/i,
     internships: /^(实习公司|实习单位|公司名称|公司|company|companyname|employer)$/i,
@@ -90,7 +95,13 @@
     portfolio: /作品名称|作品名|portfolio.?name/i
   };
   const contextualFields = {
-    education: { college: /^(学院名称|学院|院系|学院\/院系)$/, majorCategory: /^(专业类别|专业大类|专业分类)$/,
+    family: { name: /^(姓名|家人姓名|成员姓名|家庭成员姓名|亲属姓名|name)$/, relationship: /^(称谓|关系|家庭称谓|与本人关系|与本人关系称谓|称谓\/与本人关系|relationship)$/,
+      phone: /^(联系电话|联系方式|手机|手机号|手机号码|电话|phone)$/, company: /^(单位|工作单位|单位名称|公司|公司名称)$/,
+      position: /^(职位|职务|岗位)$/, political: /^(政治面貌)$/, isCompanyEmployee: /^(是否为?本公司员工(?:默认否)?|是否在本公司工作|是否本单位员工)$/ },
+    jobIntention: { acceptJobAdjustment: /^(是否同意岗位调剂|是否接受岗位调剂|是否服从调剂|服从调剂|是否接受调剂|同意调剂岗位)$/ },
+    education: { college: /^(学院名称|学院|院系|学院\/院系)$/, majorCategory: /^(专业类别|专业大类|专业分类|专业类别计算机类等)$/,
+      discipline: /^(专业所属学科门类|学科门类|专业门类)$/, degreeLevel: /^(学位|学位层次|学位等级|degreelevel)$/,
+      degreeDiscipline: /^(学位门类|学位学科门类)$/, degreeName: /^(学位名称|正式学位名称|degreename)$/,
       degree: /^(学历层次|学历|最高学历|学历水平)$/, studyMode: /^(学习形式|学习方式|学习形式全日制等)$/,
       isHighest: /^(是否为?最高学历)$/, isRegular: /^(是否统招)$/, doubleDegree: /^(是否双学位|双学位)$/,
       ranking: /^(专业成绩排名|专业排名|成绩排名)$/, laboratory: /^(实验室|实验室名称)$/,
@@ -129,6 +140,9 @@
     const language = Object.entries(contextualFields.languageCertificates).find(([, pattern]) => pattern.test(v));
     if (language && (scope !== 'professionalCertificates' || !['exam', 'level'].includes(language[0]))) return language[0];
     const basicKeys = {
+      selfEvaluation: /^(自我评价|个人评价|自我介绍|个人简介|个人自述|自述|综合评价|自我评估|自我鉴定|selfevaluation|selfassessment|personalstatement|aboutme)$/,
+      studentOrigin: /^(生源地|生源所在地)$/, health: /^(健康状况|健康情况|身体状况)$/,
+      isCompanyEmployee: /^(是否为?本公司员工(?:默认否)?|是否在本公司工作|是否本单位员工)$/,
       name: /^(姓名|中文姓名|真实姓名|name|fullname)$/, gender: /^(性别|gender|sex)$/,
       phone: /^(手机|手机号|手机号码|联系电话|移动电话|phone|mobile|telephone)$/,
       email: /^(邮箱|电子邮箱|电子邮件|email|emailaddress)$/,

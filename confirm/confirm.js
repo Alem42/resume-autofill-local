@@ -1,6 +1,6 @@
 import { send, element, status, onClick, downloadJSON } from '../shared/ui.js';
 import { PROFILE_SCHEMA, selectedSources, recordTargets, diagnosticReason, isDateSource } from '../shared/profile.js';
-const UI_VERSION = '2.7.0';
+const UI_VERSION = '2.8.0';
 const requestId = new URL(location.href).searchParams.get('requestId');
 let polling = null;
 let state = '';
@@ -259,7 +259,7 @@ function finish(result) {
   const skipReasons = { existing_value: '已有内容，本次保留', field_changed: '字段结构已变化，请重新检测',
     selection_not_committed: '组件未确认选中，请检查下拉候选或日期', component_refused: '组件未接受填写事件',
     range_requires_both: '共享日期范围需要同时确认开始和结束两个字段', field_timeout: '控件等待超时，已跳过，请手动填写（普通字段 5 秒、学校 10 秒）',
-    date_disabled: '日期填写已关闭', empty_value: '没有可填写内容', manual_edit: '已保留你的手动填写，不再自动修改' };
+    date_disabled: '日期填写已关闭', missing_date_part: '资料缺少网页要求的月份或日期，请补全或手动填写', empty_value: '没有可填写内容', manual_edit: '已保留你的手动填写，不再自动修改' };
   for (const item of result.outcomes || []) if (item.status === 'skipped') {
     reviews.append(element('p', 'review-note ' + (item.reason === 'manual_edit' ? 'ok' : 'warning'), `${labelOf(item.fieldId)}：${skipReasons[item.reason] || '未完成填写，请检查网页'}`));
     document.getElementById('after-review').hidden = false;

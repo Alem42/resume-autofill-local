@@ -155,3 +155,8 @@ progress::-webkit-progress-value { background: var(--accent); border-radius: 9px
   .progress-meta { flex-wrap: wrap; gap: 5px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *:before { transition: none !important; animation: none !important; } }
+.date-parts { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.date-parts > select { flex: 1; min-width: 76px; width: auto; }
+.date-present { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 13px; }
+.date-present input { width: auto; }
+.entry-header .row { flex-wrap: wrap; }

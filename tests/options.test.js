@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { domFixture } from './dom-fixture.js';
 import { PROFILE_SCHEMA, TEXT_FIELDS, BOOLEAN_KEYS, MAX_ENTRIES, normalizeProfile, syncHighestEducation } from '../shared/profile.js';
+import { CHOICES } from '../shared/catalogs.js';
 
 async function optionsPage(profile) {
   const f = domFixture(), nodes = new Map(), requests = [];
@@ -14,6 +15,7 @@ async function optionsPage(profile) {
   }
   prototype.addEventListener = function (type, fn) { (this.listeners ||= {})[type] ||= []; this.listeners[type].push(fn); };
   prototype.replaceChildren = function (...nodes) { [...this.children].forEach(node => node.remove()); this.append(...nodes); };
+  prototype.after = function (...nodes) { this.parentElement.append(...nodes); };
   f.doc.createElement = tag => {
     const node = f.node(tag); node.dataset = new Proxy({}, { set(target, key, value) {
       target[key] = value; node.attrs['data-' + key.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase())] = value; return true;
@@ -30,8 +32,10 @@ async function optionsPage(profile) {
     if (message.type === 'GET_OPTIONS') return { profile, model: 'deepseek-flash', rememberKey: false, hasKey: true };
     return { hasKey: true };
   };
-  Object.assign(f.context, { PROFILE_SCHEMA, TEXT_FIELDS, BOOLEAN_KEYS, MAX_ENTRIES, normalizeProfile, syncHighestEducation });
+  Object.assign(f.context, { PROFILE_SCHEMA, TEXT_FIELDS, BOOLEAN_KEYS, MAX_ENTRIES, normalizeProfile, syncHighestEducation, CHOICES,
+    loadDirectories: async () => ({ schools: [], categories: [], majors: [] }) });
   vm.runInContext(readFileSync(new URL('../shared/ui.js', import.meta.url), 'utf8').replaceAll('export ', ''), f.context);
+  vm.runInContext(readFileSync(new URL('../options/fields.js', import.meta.url), 'utf8').replace(/^import[^\n]+\n/gm, '').replaceAll('export ', ''), f.context);
   vm.runInContext(readFileSync(new URL('../options/options.js', import.meta.url), 'utf8').replace(/^import[^\n]+\n/gm, ''), f.context);
   await new Promise(resolve => setImmediate(resolve));
   const click = async id => { for (const fn of nodes.get(id).listeners?.click || []) await fn({ isTrusted: true, currentTarget: nodes.get(id) }); };
@@ -42,7 +46,7 @@ test('设置页面加载并保存完整日期和 false 单选值，同步按钮�
   const profile = normalizeProfile({ basic: { highestDegree: '本科', expectedGraduationDate: '2024-06' },
     education: [{ school: 'DEMO_SCHOOL', degree: '硕士', isHighest: true, doubleDegree: false, startDate: '2024-09-13', endDate: '2027-06-22' }] });
   const f = await optionsPage(profile);
-  assert.equal(f.nodes.get('save-options').disabled, false);
+  assert.equal(f.nodes.get('save-options').disabled, false, f.nodes.get('status').textContent);
   assert.equal(f.doc.querySelector('select[data-key="doubleDegree"]').value, 'false');
   await f.click('sync-highest'); await f.click('save-options');
   const saved = f.requests.find(request => request.type === 'SAVE_OPTIONS');

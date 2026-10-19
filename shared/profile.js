@@ -13,7 +13,8 @@ export const PROFILE_SCHEMA = {
   basic: {
     title: '基本信息', fields: {
       name: '姓名', gender: '性别', birthday: '出生日期', phone: '手机号', email: '邮箱',
-      location: '现居城市', hukou: '户籍所在地', nativePlace: '籍贯', ethnicity: '民族',
+      location: '现居城市', hukou: '户籍所在地', nativePlace: '籍贯', studentOrigin: '生源地', ethnicity: '民族',
+      health: '健康状况', isCompanyEmployee: '是否本公司员工（默认否）',
       political: '政治面貌', marital: '婚姻状况', workYears: '工作年限',
       availableDate: '到岗时间', expectedGraduationDate: '预计毕业时间（YYYY-MM）',
       englishName: '英文姓名', nationality: '国籍', highestDegree: '最高学历',
@@ -25,9 +26,10 @@ export const PROFILE_SCHEMA = {
   },
   education: {
     title: '教育经历', multiple: true, fields: {
-      school: '学校', major: '专业', degree: '学历', degreeName: '学位名称', college: '学院 / 院系',
+      school: '学校', major: '专业', degree: '学历', degreeLevel: '学位层次（学士 / 硕士 / 博士）',
+      degreeDiscipline: '学位门类（工学等）', degreeName: '正式学位名称', college: '学院 / 院系',
       country: '学校所在国家 / 地区', city: '学校所在城市', studyMode: '学习形式（全日制等）',
-      majorCategory: '专业大类', researchDirection: '研究方向', supervisor: '导师',
+      discipline: '专业所属学科门类', majorCategory: '专业类别（计算机类等）', researchDirection: '研究方向', supervisor: '导师',
       duration: '学制', isRegular: '是否统招', isHighest: '是否最高学历', doubleDegree: '是否双学位', laboratory: '实验室',
       gpa: 'GPA / 排名', startDate: '开始时间', endDate: '结束时间',
       ranking: '专业排名', coreCourses: '主修课程', description: '在校经历', awards: '获奖 / 荣誉（历史兼容）', publications: '论文 / 专利（历史兼容）'
@@ -94,11 +96,16 @@ export const PROFILE_SCHEMA = {
   portfolio: { title: '作品集', multiple: true, fields: {
     name: '作品名称', type: '作品类型', url: '作品链接', date: '完成时间', description: '作品说明'
   } },
+  family: { title: '家庭情况', multiple: true, fields: {
+    name: '家人姓名', relationship: '称谓 / 与本人关系', phone: '联系电话', company: '工作单位',
+    position: '职位', political: '政治面貌', isCompanyEmployee: '是否本公司员工（默认否）'
+  } },
   jobIntention: {
     title: '求职意向', fields: {
       position: '期望职位', salary: '期望薪资', city: '期望城市', type: '工作类型',
       industry: '期望行业', currentAnnual: '目前年薪', business: '意向业务 / 部门',
-      relocation: '是否接受调剂 / 异地', internshipDuration: '可实习时长', daysPerWeek: '每周可实习天数'
+      relocation: '异地工作意愿（兼容旧调剂文本）', acceptJobAdjustment: '是否同意岗位调剂',
+      internshipDuration: '可实习时长', daysPerWeek: '每周可实习天数'
     }
   }
 };
@@ -106,7 +113,8 @@ export const TEXT_FIELDS = {
   languages: '语言能力（综合描述）', certificates: '资格证书（综合描述）', skills: '专业技能',
   selfEvaluation: '自我评价', interests: '兴趣爱好', additionalInformation: '补充信息'
 };
-export const BOOLEAN_KEYS = new Set(['education.isHighest', 'education.isRegular', 'education.doubleDegree']);
+export const BOOLEAN_KEYS = new Set(['education.isHighest', 'education.isRegular', 'education.doubleDegree',
+  'basic.isCompanyEmployee', 'family.isCompanyEmployee', 'jobIntention.acceptJobAdjustment']);
 const forbidden = new Set(['__proto__', 'constructor', 'prototype']);
 
 function assertObject(value, name) {
@@ -180,8 +188,10 @@ export function normalizeProfile(value = {}, { strict = true } = {}) {
       const entries = value[section] ?? [];
       if (!Array.isArray(entries) || entries.length > MAX_ENTRIES) throw new Error(`${schema.title} 最多 ${MAX_ENTRIES} 条`);
       result[section] = entries.map(cleanRecord).filter(record => Object.values(record).some(value => value !== '' && value != null));
+      if (section === 'family') for (const record of result[section]) if (record.isCompanyEmployee === '') record.isCompanyEmployee = false;
     } else result[section] = cleanRecord(value[section] ?? {});
   }
+  if (result.basic.isCompanyEmployee === '') result.basic.isCompanyEmployee = false;
   for (const key of Object.keys(TEXT_FIELDS)) result[key] = cleanText(value[key], TEXT_FIELDS[key]);
   const highest = result.education.filter(record => record.isHighest === true);
   if (highest.length === 1 && !result.basic.highestDegree) result.basic.highestDegree = highest[0].degree;
@@ -207,7 +217,10 @@ export function profileSources(profile) {
         }
       });
     } else {
-      for (const [key, label] of Object.entries(schema.fields)) add(`${section}.${key}`, `${schema.title} / ${label}`, profile[section][key]);
+      for (const [key, label] of Object.entries(schema.fields)) {
+        if (section === 'basic' && key === 'isCompanyEmployee') continue;
+        add(`${section}.${key}`, `${schema.title} / ${label}`, profile[section][key]);
+      }
     }
   }
   for (const [key, label] of Object.entries(TEXT_FIELDS)) add(key, label, profile[key]);
@@ -231,6 +244,7 @@ export function profileSources(profile) {
         value, section: 'languageCertificates', fieldKey, recordIndex: index });
     }
   });
+  add('basic.isCompanyEmployee', '基本信息 / 是否本公司员工（默认否）', profile.basic.isCompanyEmployee);
   return sources;
 }
 
@@ -263,7 +277,8 @@ export function recordTargets(sources) {
 export function sourceConflict(field, source, { manualUnknown = false } = {}) {
   const fieldKind = field.intent || semantics.fieldKind(field.label || field.name || field.placeholder, field.section);
   const languageField = ['language', 'proficiency', 'exam', 'score', 'certificateSummary'].includes(fieldKind);
-  const section = languageField ? 'languageCertificates' : field.section || semantics.inferSection([field.label, field.name, field.placeholder].join(' '));
+  const section = languageField ? 'languageCertificates' : fieldKind === 'selfEvaluation' ? 'other'
+    : field.section || semantics.inferSection([field.label, field.name, field.placeholder].join(' '));
   if (section === 'employment') {
     if (!['work', 'internships'].includes(source.section)) return 'section_mismatch';
   } else if (section === 'qualifications') {
@@ -285,12 +300,15 @@ export function sourceConflict(field, source, { manualUnknown = false } = {}) {
 }
 export function sourceAllowed(field, source, options) {
   if (languageConflict(field, source)) return false;
+  if (field.section === 'family' || source.section === 'family') return sourceConflict(field, source, options) === null;
   if (options?.relaxed === true) return true;
   return sourceConflict(field, source, options) === null;
 }
 
 function languageConflict(field, source) {
   const kind = field.intent || semantics.fieldKind(field.label || field.name || field.placeholder, field.section);
+  // The explicit employee default cannot become a generic answer to other questions.
+  if (source.fieldKey === 'isCompanyEmployee' || kind === 'isCompanyEmployee') return source.fieldKey !== kind;
   if (!['language', 'proficiency', 'exam', 'score', 'certificateSummary'].includes(kind)) return false;
   return source.section !== 'languageCertificates' || source.fieldKey !== kind;
 }
@@ -383,13 +401,17 @@ export function validateMatches(reply, fields, sources, { manualUnknown = false,
       throw new MappingValidationError(field, source, 'field_mismatch');
     }
     const conflict = sourceConflict(field, source, { manualUnknown });
+    if (conflict && (field.section === 'family' || source.section === 'family')) {
+      if (relaxed) { seen.add(field.id); return null; }
+      throw new MappingValidationError(field, source, conflict);
+    }
     if (conflict && !relaxed) throw new MappingValidationError(field, source, conflict);
     seen.add(field.id);
     return { fieldId: field.id, sourceId: source.id, fieldLabel: field.label || field.placeholder || field.name || field.id,
       section: field.section, recordIndex: field.recordIndex, hasValue: field.hasValue,
       ...(conflict ? { needsReview: true, warning: diagnosticReason({ reason: conflict, field: fieldDiagnostic(field), source: sourceDiagnostic(source) }), conflict } : {}),
-      sourceLabel: source.label, value: field.datePart && /^(\d{4})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?$/.test(source.value)
-        ? ((date) => String(field.datePart === 'year' ? date[1] : field.datePart === 'month' ? +date[2] : +(date[3] || 1)))(/^(\d{4})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?$/.exec(source.value))
+      sourceLabel: source.label, value: field.datePart && /^(\d{4})(?:[-/.](\d{1,2})(?:[-/.](\d{1,2}))?)?$/.test(source.value)
+        ? ((date) => { const part = date[field.datePart === 'year' ? 1 : field.datePart === 'month' ? 2 : 3]; return part ? String(+part) : ''; })(/^(\d{4})(?:[-/.](\d{1,2})(?:[-/.](\d{1,2}))?)?$/.exec(source.value))
         : field.datePrecision === 'year' && /^\d{4}/.test(source.value) ? source.value.slice(0, 4)
         : field.datePrecision === 'month' && /^\d{4}[-/.]\d{1,2}/.test(source.value)
         ? source.value.replace(/^(\d{4})[-/.](\d{1,2}).*$/, (_, year, month) => `${year}-${month.padStart(2, '0')}`) : source.value,

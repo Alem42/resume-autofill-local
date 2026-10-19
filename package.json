@@ -1,16 +1,21 @@
 {
   "name": "resume-autofill-local",
-  "version": "2.7.0",
+  "version": "2.8.0",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.js",
     "test:browser": "node tests/browser/run.mjs",
     "test:components": "node tests/browser/components-run.mjs",
+    "test:beisen": "node tests/browser/beisen-run.mjs && node tests/browser/beisen-range-run.mjs",
+    "test:beisen:serve": "node tests/browser/beisen-server.mjs",
     "inspect:companies": "node tests/browser/inspect-companies.mjs"
   },
   "devDependencies": {
     "@arco-design/web-react": "2.66.18",
+    "@beisen-phoenix/date-picker": "3.3.55",
+    "@beisen-phoenix/select": "3.3.55",
+    "@beisen-phoenix/select-list": "3.3.55",
     "antd": "6.6.6",
     "element-plus": "2.14.7",
     "element-ui": "2.15.14",

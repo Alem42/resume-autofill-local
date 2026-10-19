@@ -85,7 +85,7 @@ test('AI 上传默认关闭，第一次确认只传递用户实际选择的布�
     assert.equal(message.aiAssist, assisted); assert.equal(message.autoAdd, true); assert.equal(message.overwrite, false);
     assert.equal(message.relaxed, true);
     assert.equal(message.aiReview, false);
-    assert.deepEqual(message.sourceIds, ['S0']);
+    assert.deepEqual(message.sourceIds, ['S0', 'S1']); // Name plus explicit default employee policy.
   }
 });
 
@@ -157,7 +157,7 @@ test('关闭日期会禁用日期资料且全选不能重新带入，重新开�
   await f.fire(f.nodes.get('match'), 'click');
   const message = f.requests.find(request => request.type === 'MATCH_FIELDS');
   assert.equal(message.includeDates, false);
-  assert.deepEqual(message.sourceIds, sources.filter(source => !isDateSource(source)).map(source => source.id));
+  assert.deepEqual([...message.sourceIds].sort(), sources.filter(source => !isDateSource(source)).map(source => source.id).sort());
 });
 
 test('未知总量不画百分比，填写进度分开显示处理、成功和跳过，结束后显示真实计数', async () => {

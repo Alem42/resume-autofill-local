@@ -1,10 +1,11 @@
 // Component interaction stays in the isolated page world. No storage, fetch or site-specific code execution.
 (() => {
   if (globalThis.__resumeControls) return;
-  const CHOICE_PANELS = '[role="listbox"],[role="tree"],[class*="dropdown"],[class*="Dropdown"],[class*="autocomplete"],[class*="AutoComplete"],[class*="suggestion"],[class*="select-menu"],[class*="Select-menu"],[class*="select-list"],[class*="Select-list"],[class*="select-panel"],[class*="Select-panel"],[class*="select-popup"],[class*="Select-popup"],[class*="popover"],[class*="Popover"],.arco-select-popup,.t-select__dropdown,.t-popup__content,.n-base-select-menu,[class*="phoenix-selectList"],.phoenix-single-select-list';
+  const CHOICE_PANELS = '[role="listbox"],[role="tree"],[class*="dropdown"],[class*="Dropdown"],[class*="autocomplete"],[class*="AutoComplete"],[class*="suggestion"],[class*="select-menu"],[class*="Select-menu"],[class*="select-list"],[class*="Select-list"],[class*="select-panel"],[class*="Select-panel"],[class*="select-popup"],[class*="Select-popup"],[class*="popover"],[class*="Popover"],.arco-select-popup,.t-select__dropdown,.t-popup__content,.n-base-select-menu,.phoenix-selectList,.phoenix-single-select-list,.constant-main-selector-container,.constant-main-layer-container';
   const DATE_PANELS = '.ant-calendar,.ant-calendar-picker-panel,.ant-picker-dropdown,.el-picker-panel,.flatpickr-calendar,.react-datepicker,.MuiPickersPopper-root,[class*="DayPicker"],[class*="DateCalendar"],[class*="calendar"],[class*="Calendar"],[class*="date-picker"],[class*="DatePicker"],[class*="datepicker"],[class*="picker-panel"],[class*="Picker-panel"],[class*="picker-popup"],[class*="Picker-popup"],[class*="Picker-popover"],[class*="date-panel"],[class*="month-panel"],.el-date-picker,.arco-picker-container,.arco-picker-popup,.t-date-picker__panel,.n-date-panel,.ivu-date-picker-transfer,.layui-laydate';
   const compact = text => String(text || '').normalize('NFKC').toLowerCase().replace(/[\s\u200b\u00a0·•,，:：_\-]/g, '');
   const core = text => compact(text).replace(/\([^)]*\)|\[[^\]]*\]/g, '');
+  const optionText = node => (node.querySelector?.('.item-text-label')?.textContent || node.textContent || '').trim();
   const aliases = new Map([['大学本科', '本科'], ['本科毕业', '本科'], ['学士', '本科'], ['硕士研究生', '硕士'], ['博士研究生', '博士'], ['大专', '专科'], ['汉族', '汉'],
     ['english', '英语'], ['英文', '英语'], ['chinese', '中文'], ['汉语', '中文'], ['japanese', '日语'], ['雅思', 'ielts'], ['托福', 'toefl'],
     ['中华人民共和国居民身份证', '身份证'], ['居民身份证', '身份证'], ['全日制普通高等教育', '全日制'],
@@ -34,6 +35,8 @@
     const a = compact(option), b = compact(value);
     if (!a || !b) return 0;
     if (a === b) return 1;
+    if (kind === 'degreeLevel' && /^(?:bachelor|bachelorsdegree)$/.test(a) && b === '学士') return .97;
+    if (kind === 'isCompanyEmployee' && b === '否' && /^(?:非本公司员工|不是本公司员工|否认|no)$/.test(a)) return .97;
     const negative = /^(?:非|不|未|无|否|non|not)/;
     if (negative.test(a) !== negative.test(b) && (a.includes(b) || b.includes(a))) return 0;
     if (['startDate', 'endDate', 'date', 'birthday', 'expectedGraduationDate'].includes(kind)
@@ -60,7 +63,7 @@
         .filter(item => item.score > 0).sort((a, b) => b.score - a.score)[0];
       if (best) return { ...best, score: 1, preference: true };
     }
-    const ranked = options.map(element => ({ element, score: optionScore(element.textContent, value, kind) }))
+    const ranked = options.map(element => ({ element, score: optionScore(optionText(element), value, kind) }))
       .filter(item => item.score > 0).sort((a, b) => b.score - a.score);
     if (!ranked.length) return null;
     const best = ranked[0];
@@ -148,7 +151,7 @@
         || root.getAttribute('aria-haspopup') === 'listbox' || el.getAttribute('aria-expanded') !== null
         || /select|combo|autocomplete|auto-complete|suggest/i.test((el.className || '') + ' ' + (root.className || ''));
     }
-    function panels(el, selectors, before = new Set()) {
+    function panels(el, selectors, before = new Set(), claim = true) {
       const root = fieldRoot(el), input = textInput(el), rect = el.getBoundingClientRect();
       const ids = [el, input, root].filter(Boolean).flatMap(node => [node.getAttribute('aria-controls'), node.getAttribute('aria-owns')])
         .filter(Boolean).flatMap(value => value.split(/\s+/));
@@ -166,18 +169,51 @@
       const found = candidates.filter(panel => !candidates.some(other => other !== panel
         && (selectors === DATE_PANELS ? other.contains(panel) : panel.contains(other))))
         .sort((a, b) => Math.abs(a.getBoundingClientRect().top - rect.bottom) - Math.abs(b.getBoundingClientRect().top - rect.bottom));
-      found.forEach(panel => hooks.claimPanel?.(panel));
+      if (claim) found.forEach(panel => hooks.claimPanel?.(panel));
       return found;
     }
     function optionElements(menu) {
       const eligible = node => visible(node) && !node.disabled && node.getAttribute('aria-disabled') !== 'true'
           && !/disabled|arrow|icon|clear|remove|placeholder|loading/i.test(node.className || '')
-          && !node.closest('a[href],button[type="submit"],button[type="reset"]') && !node.querySelector('input,select,textarea,button,a[href]')
+          && !node.closest('a[href],button[type="submit"],button[type="reset"]') && !node.querySelector('input:not([type="radio"]):not([type="checkbox"]),select,textarea,button,a[href]')
           && node.textContent.trim().length > 0 && node.textContent.trim().length <= 250;
-      const semantic = [...menu.querySelectorAll('[role="option"],li,.ant-select-item-option,.el-select-dropdown__item,.arco-select-option,.n-base-select-option,.t-select-option,.phoenix-single-select-list__item,.phoenix-selectList__listItem')].filter(eligible);
+      const semantic = [...menu.querySelectorAll('[role="option"],[role="treeitem"],[role="radio"],[role="checkbox"],li,label,.list-item-container,.ant-select-item-option,.el-select-dropdown__item,.arco-select-option,.n-base-select-option,.t-select-option,.phoenix-single-select-list__item,.phoenix-selectList__listItem')].filter(eligible);
       if (semantic.length) return semantic.filter(node => !semantic.some(other => other !== node && other.contains(node)));
       const nodes = [...menu.querySelectorAll('[class*="option"],[class*="Option"],[class*="item"],span,div,p')].filter(eligible);
       return nodes.filter(node => !nodes.some(other => other !== node && node.contains(other)));
+    }
+    function confirmButton(panel) {
+      return [...panel.querySelectorAll('button,[role="button"],[class*="footerButton"],[class*="confirm"],.phoenix-button')]
+        .find(node => visible(node) && !node.disabled && node.getAttribute('aria-disabled') !== 'true'
+          && !/disable|loading/i.test(node.className || '') && !node.querySelector('[class*="--disable"],[class*="--loading"]')
+          && /^(确定|确认|完成|ok|done|confirm)$/i.test(node.textContent.trim())
+          && !node.closest('a[href],button[type="submit"],button[type="reset"]')
+          && !(node.tagName === 'BUTTON' && ['submit', 'reset'].includes(node.type)));
+    }
+    function choiceOwner(menu, el) {
+      // A list and its footer are often siblings. Claim only its nearest owned popup,
+      // never a page form or an unrelated dialog's confirmation button.
+      let root = menu;
+      for (let node = menu.parentElement, depth = 0; node && node !== document.body && depth < 6; node = node.parentElement, depth++) {
+        if (node.contains(el) || node.tagName === 'FORM' || node.matches('main,section,nav')) break;
+        if (node.matches('[role="dialog"],[role="listbox"],[class*="popover"],[class*="Popover"],[class*="dropdown"],[class*="Dropdown"],[class*="selectList"],[class*="select-panel"],[class*="picker-popup"],.constant-main-selector-container')
+          || node.querySelector('.select-data-container') && confirmButton(node)) {
+          root = node;
+          if (confirmButton(node)) break;
+        }
+      }
+      hooks.claimPanel?.(root);
+      return root;
+    }
+    function activate(node) {
+      check();
+      node = node.querySelector('.phoenix-button__wraper') || node;
+      const action = () => {
+        node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        if (typeof node.click === 'function') node.click(); else node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      };
+      if (hooks.activate) hooks.activate(action); else action();
     }
     function displayed(el) {
       const input = textInput(el), root = fieldRoot(el);
@@ -194,6 +230,7 @@
       return copy.textContent.trim().slice(0, 500);
     }
     async function open(el) {
+      await hooks.beforeOpen?.(el);
       const root = fieldRoot(el), input = textInput(el);
       input?.focus();
       const trigger = root.querySelector('[class*="selector"],[class*="selection"],[class*="trigger"]') || el;
@@ -204,15 +241,30 @@
     }
     async function choose(el, best, menus, preserveParent = false) {
       const input = textInput(el), candidate = best.element, menu = menus.find(menu => menu.contains(candidate));
-      const before = displayed(el), selectedText = candidate.textContent.trim();
-      const chain = [candidate];
+      const owner = choiceOwner(menu, el);
+      const before = displayed(el), selectedText = optionText(candidate);
+      const radio = candidate.querySelector('input[type="radio"],input[type="checkbox"]');
+      const chain = [radio || candidate.querySelector('.RadioUnchecked,.CheckboxUnchecked,.RadioChecked,.CheckboxChecked,.phoenix-selectList__singleLabel') || candidate];
+      if (radio) chain.push(candidate);
       for (let node = candidate.parentElement; node && node !== menu && chain.length < 4; node = node.parentElement) {
         if (node.getAttribute('role') === 'option' || /option|item/i.test(node.className || '')) chain.push(node);
       }
       for (const node of chain) {
         check();
-        node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); node.click();
+        activate(node);
         await sleep(180);
+        const selected = radio?.checked || candidate.querySelector('.RadioChecked,.CheckboxChecked') || candidate.getAttribute('aria-selected') === 'true' || candidate.getAttribute('aria-checked') === 'true'
+          || /isSelected|is-selected|--selected|\bselected\b/.test(candidate.className || '')
+          || [...owner.querySelectorAll('.select-data-container,[class*="selected-list"],[class*="selectedList"]')]
+            .some(node => optionScore(node.textContent.trim(), selectedText, kindOf(el)) > 0);
+        const confirm = visible(owner) && confirmButton(owner);
+        if (confirm) {
+          hooks.trace?.({ stage: 'choice-pending', panels: menus.length, candidates: menus.flatMap(optionElements).length });
+          if (!selected) continue;
+          activate(confirm); await sleep(180);
+          hooks.trace?.({ stage: 'choice-confirmed' });
+          if (owner.isConnected && visible(owner)) { if (!preserveParent) await close(el, input || el); return false; }
+        }
         const after = displayed(el), kind = kindOf(el);
         const matched = optionScore(after, selectedText, kind) > 0;
         const committed = after !== before || candidate.getAttribute('aria-selected') === 'true' || !candidate.isConnected
@@ -236,7 +288,7 @@
       const signals = choiceSignals(el);
       await open(el);
       let detected = signals, searched = false, best = null, menus = [];
-      let searchIndex = 0, sinceSearch = 0, stableFor = 0, lastSignature = '';
+      let searchIndex = 0, sinceSearch = 0, stableFor = 0, lastSignature = '', popupSearched = false, scrolls = 0;
       // Do not write a readonly display field: it must select an actual option.
       if (input && !input.readOnly && (kind === 'school' || plain && !signals)) { write(input, value); searched = true; }
       const limit = kind === 'school' ? 70 : signals || !plain ? 40 : 5;
@@ -244,9 +296,15 @@
         await sleep(100); check();
         sinceSearch += 100;
         menus = panels(el, CHOICE_PANELS, before);
+        const owners = [...new Set(menus.map(menu => choiceOwner(menu, el)))];
+        if (!popupSearched) {
+          const search = owners.flatMap(root => [...root.querySelectorAll('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"])')])
+            .find(node => visible(node) && !node.readOnly && !node.disabled);
+          if (search) { write(search, value); popupSearched = true; searched = true; sinceSearch = 0; }
+        }
         const options = menus.flatMap(optionElements);
         if (options.length) detected = true;
-        const signature = options.map(node => node.textContent.trim()).join('\n');
+        const signature = options.map(optionText).join('\n');
         stableFor = signature && signature === lastSignature ? stableFor + 100 : 0;
         lastSignature = signature;
         const busy = kind === 'school' && [fieldRoot(el), ...menus].some(root => root.getAttribute('aria-busy') === 'true'
@@ -255,6 +313,14 @@
         hooks.trace?.({ stage: 'choice', kind, panels: menus.length, candidates: options.length, matched: Boolean(best) });
         if (kind === 'school' && (sinceSearch < 1000 || busy || options.length && stableFor < 300)) continue;
         if (best?.score >= .97 || best && !assist) break;
+        if (!best && options.length && sinceSearch >= 600 && scrolls < 4) {
+          const scroller = owners.flatMap(root => [root, ...root.querySelectorAll('div,ul')])
+            .find(node => visible(node) && node.scrollHeight > node.clientHeight + 8 && node.clientHeight > 30
+              && /auto|scroll/.test(window.getComputedStyle(node).overflowY));
+          if (scroller && scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 2) {
+            scroller.scrollTop += scroller.clientHeight * .8; scrolls++; await sleep(100); continue;
+          }
+        }
         if (!best && input && !input.readOnly && kind === 'school' && searched && sinceSearch >= 3500 && searchIndex + 1 < terms.length) {
           write(input, terms[++searchIndex]);
           sinceSearch = 0; stableFor = 0; lastSignature = '';
@@ -270,7 +336,7 @@
         const options = menus.flatMap(optionElements).filter((node, index, all) =>
           all.findIndex(other => compact(other.textContent) === compact(node.textContent)) === index).slice(0, 60);
         if (options.length) {
-          const index = await hooks.resolveOption(el, options.map(node => node.textContent.trim()));
+          const index = await hooks.resolveOption(el, options.map(optionText));
           check();
           if (Number.isInteger(index) && index >= 0 && index < options.length && visible(options[index])) {
             best = { element: options[index], score: .9, ai: true };
@@ -301,9 +367,9 @@
     async function confirmCalendar(el) {
       const panel = datePanels.get(textInput(el) || el);
       if (!panel?.isConnected || !visible(panel)) return;
-      const button = [...panel.querySelectorAll('button,[role="button"],[class*="confirm"],[class*="Confirm"],[class*="footer"]')]
+      const button = confirmButton(panel) || [...panel.querySelectorAll('button,[role="button"],[class*="confirm"],[class*="Confirm"],[class*="footer"]')]
         .find(node => safeCell(node) && /^(确定|确认|确认日期|完成|ok|done|confirm)$/i.test(node.textContent.trim()) && !node.querySelector('input,textarea,select'));
-      if (button) { check(); button.click(); await sleep(160); }
+      if (button) { activate(button); await sleep(160); }
     }
     const monthNames = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
     function calendarView(panel) {
@@ -420,6 +486,13 @@
       check();
       // Editable pickers often accept their documented display format directly.
       const knownPrecision = datePrecision(input);
+      const sourceDate = dateParts(value);
+      const requireParts = precision => {
+        if (sourceDate && (precision === 'day' && !sourceDate.hasDay || precision === 'month' && !sourceDate.hasMonth)) {
+          const error = new Error('资料缺少网页要求的月份或日期'); error.code = 'MISSING_DATE_PART'; throw error;
+        }
+      };
+      requireParts(knownPrecision);
       if (!pending && !input.readOnly && ['year', 'month', 'day'].includes(knownPrecision)) {
         const target = formatDate(value, knownPrecision), parsed = dateParts(target);
         if (parsed) {
@@ -447,12 +520,24 @@
         panel = panels(input, DATE_PANELS, before)[0];
       }
       if (!panel) return { filled: false, precision: datePrecision(input) };
+      const rangeSide = root => {
+        if (!root?.querySelector('.phoenix-calendar-range-left')) return root;
+        for (let node = input.parentElement, depth = 0; node && node !== document.body && depth < 6; node = node.parentElement, depth++) {
+          const peers = [...node.querySelectorAll('input:not([type="hidden"])')];
+          if (peers.length > 2) break;
+          if (peers.length === 2) return root.querySelector(peers.indexOf(input) === 1 ? '.phoenix-calendar-range-right' : '.phoenix-calendar-range-left') || root;
+        }
+        return root;
+      };
+      const portalPanel = panel;
+      panel = rangeSide(panel);
       let precision = datePrecision(input, panel), target = formatDate(value, ['year', 'month'].includes(precision) ? precision : 'day');
+      requireParts(precision);
       hooks.trace?.({ stage: 'calendar-open', precision, current: panelMonth(panel) });
       const date = dateParts(value);
       if (!date) return { filled: false, precision };
-      datePanels.set(input, panel);
-      const requery = () => panels(input, DATE_PANELS, before)[0];
+      datePanels.set(input, portalPanel);
+      const requery = () => rangeSide(panels(input, DATE_PANELS, before)[0]);
       const verify = async () => {
         if (pending) return true; // Shared ranges commit only after both approved dates have been selected.
         datePanels.set(input, requery() || panel); await confirmCalendar(input);
@@ -478,7 +563,50 @@
         if (!month) return { filled: false, precision: 'month', target };
         month.click(); await sleep(100); return { filled: await verify(), precision: 'month', target };
       }
-      // Some popups (including Phoenix/rc-calendar) expose their own editable date input.
+      // Phoenix navigation is an explicit year -> month -> day transaction. Its
+      // search/date editor is not the outer value and must not be treated as one.
+      if ((panel.matches('.phoenix-calendar,.phoenix-date-picker,.phoenix-calendar-range-part') || panel.querySelector('.phoenix-calendar'))
+        && !panel.querySelector('.phoenix-calendar-range')) {
+        const current = () => requery() || panel;
+        const find = selector => [...current().querySelectorAll(selector)].find(safeNavigation);
+        const years = find('.phoenix-calendar-year-panel');
+        if (!years) {
+          const header = find('.phoenix-calendar-month-panel-year-select,.phoenix-calendar-year-select');
+          if (header) { activate(header); await sleep(90); panel = current(); }
+        }
+        hooks.trace?.({ stage: 'calendar-year', precision });
+        let year;
+        for (let step = 0; step < 16; step++) {
+          check(); panel = current();
+          const cells = [...panel.querySelectorAll('.phoenix-calendar-year-panel-year')].filter(safeCell);
+          year = cells.find(node => parseInt(node.textContent, 10) === date.year);
+          if (year) break;
+          if (!cells.length) break;
+          const previous = date.year < Math.min(...cells.map(node => parseInt(node.textContent, 10)));
+          const jump = find(previous ? '.phoenix-calendar-year-panel-prev-decade-btn' : '.phoenix-calendar-year-panel-next-decade-btn');
+          if (!jump) break; activate(jump); await sleep(90);
+        }
+        if (!year) return { filled: false, precision, target };
+        activate(year); await sleep(90); panel = current();
+        if (precision === 'year') return { filled: await verify(), precision, target };
+        requireParts('month');
+        if (!find('.phoenix-calendar-month-panel')) {
+          const header = find('.phoenix-calendar-month-select');
+          if (header) { activate(header); await sleep(90); panel = current(); }
+        }
+        hooks.trace?.({ stage: 'calendar-month', precision });
+        const month = [...panel.querySelectorAll('.phoenix-calendar-month-panel-month')].filter(safeCell)
+          .find(node => monthNumber(node.textContent) === date.month);
+        if (!month) return { filled: false, precision, target };
+        activate(month); await sleep(100); panel = current();
+        if (precision === 'month') return { filled: await verify(), precision, target };
+        const day = calendarDay(panel, date, formatDate(value, 'day'), true);
+        hooks.trace?.({ stage: 'calendar-day', found: Boolean(day) });
+        if (!day) return { filled: false, precision: 'day', target };
+        requireParts('day');
+        activate(day); return { filled: await verify(), precision: 'day', target: formatDate(value, 'day') };
+      }
+      // Other editable pickers can commit through their documented popup editor.
       // Commit through that input's normal events; Enter is allowed only outside any form.
       if (!pending) {
         const editors = [...panel.querySelectorAll('input:not([type="hidden"])')].filter(node => visible(node) && !node.readOnly && !node.disabled
@@ -498,9 +626,9 @@
           panel = requery() || panel;
         }
       }
-      if (precision !== 'month') {
+      if (precision === 'day' || precision === 'unknown') {
         const exact = [...panel.querySelectorAll(`[title="${target}"],[data-date="${target}"],[aria-label="${target}"]`)].find(safeCell);
-        if (exact) { exact.click(); return { filled: await verify(), precision: 'day', target }; }
+        if (exact) { requireParts('day'); exact.click(); return { filled: await verify(), precision: 'day', target }; }
       }
       panel = await setHeaders(panel, date, requery);
       panel = await navigateMonths(panel, date, requery);
@@ -510,7 +638,7 @@
         const current = panelMonth(panel);
         const exact = calendarDay(panel, date, target, current?.year === date.year && current.month === date.month);
         hooks.trace?.({ stage: 'calendar-day', found: Boolean(exact) });
-        if (exact) { check(); exact.click(); return { filled: await verify(), precision: 'day', target }; }
+        if (exact) { requireParts('day'); check(); exact.click(); return { filled: await verify(), precision: 'day', target }; }
       }
       // Year selection handles both standard picker headers and custom year/month lists.
       const yearSelector = '.ant-calendar-year-select,.ant-picker-year-btn,[class*="year-select"],[class*="year-btn"],[class*="year-label"],.el-date-picker__header-label,.arco-picker-header-label';
@@ -541,6 +669,7 @@
       if (!year && !yearAlreadySelected && panelMonth(panel)?.year !== date.year) return { filled: false, precision, target };
       if (year) { check(); year.click(); await sleep(120); panel = requery() || panel; }
       if (precision === 'year') return { filled: await verify(), precision, target };
+      requireParts('month');
       const monthPattern = /^(?:\d{1,2}\s*月?|[一二三四五六七八九十]{1,3}月|january|february|march|april|may|june|july|august|september|october|november|december|jan\.?|feb\.?|mar\.?|apr\.?|jun\.?|jul\.?|aug\.?|sep\.?|oct\.?|nov\.?|dec\.?)$/i;
       const monthButton = panel.querySelector('.ant-calendar-month-select,.ant-picker-month-btn,[class*="month-select"],[class*="month-btn"]');
       if (monthButton && safeCell(monthButton)) { check(); monthButton.click(); await sleep(100); panel = requery() || panel; }
@@ -578,15 +707,17 @@
       if (precision === 'month') return { filled: await verify(), precision, target };
       panel = currentPanel;
       if (!panel) return { filled: false, precision: 'day', target };
+      requireParts('day');
       const day = calendarDay(panel, date, target, true);
       if (!day) return { filled: false, precision: 'day', target };
       day.click(); return { filled: await verify(), precision: 'day', target };
     }
     // A trusted click can arrive before the first polling tick discovers a portal.
     function ownsTarget(el, target) {
-      return [...panels(el, CHOICE_PANELS), ...panels(el, DATE_PANELS)].some(panel => panel.contains(target));
+      return [...panels(el, CHOICE_PANELS, new Set(), false), ...panels(el, DATE_PANELS, new Set(), false)].some(panel => panel.contains(target));
     }
-    return Object.freeze({ choiceSignals, fillChoice, fillCalendar, confirmCalendar, displayed, fieldRoot, ownsTarget });
+    const openPanels = el => [...panels(el, CHOICE_PANELS, new Set(), false), ...panels(el, DATE_PANELS, new Set(), false)];
+    return Object.freeze({ choiceSignals, fillChoice, fillCalendar, confirmCalendar, displayed, fieldRoot, ownsTarget, openPanels });
   }
   globalThis.__resumeControls = Object.freeze({ create, optionScore, rankOptions, datePrecision, dateParts, formatDate, CHOICE_PANELS, DATE_PANELS });
 })();

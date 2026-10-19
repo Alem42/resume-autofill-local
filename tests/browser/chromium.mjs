@@ -12,7 +12,7 @@ export async function chromium(output) {
   let binary; for (const path of candidates) { try { await access(path); binary = path; break; } catch {} }
   if (!binary) throw new Error('Set BROWSER_BIN to a Chromium executable');
   const profile = await mkdtemp(resolve(output, 'browser-components-'));
-  const browser = spawn(binary, ['--headless=new', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { windowsHide: true, stdio: 'ignore' });
+  const browser = spawn(binary, ['--headless=new', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-background-networking', '--disable-background-timer-throttling', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { windowsHide: true, stdio: 'ignore' });
   let url; await until(async () => { try { const [port, path] = (await readFile(resolve(profile, 'DevToolsActivePort'), 'utf8')).trim().split(/\r?\n/); url = `ws://127.0.0.1:${port}${path}`; return true; } catch { return false; } }, 'browser debugger');
   const ws = new WebSocket(url); await new Promise((resolveOpen, reject) => { ws.addEventListener('open', resolveOpen, { once: true }); ws.addEventListener('error', reject, { once: true }); });
   let next = 0; const pending = new Map(), errors = [];

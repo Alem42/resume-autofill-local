@@ -62,7 +62,7 @@ async function runCase(variant, includeDates) {
   if (variant === 'stress') profile = normalizeProfile({ basic: { ...fixtureProfile.basic, availableDate: '2027-07-01' },
     education: [{ school: '演示拒绝学校' }], interests: '阅读', selfEvaluation: fixtureProfile.selfEvaluation });
   const readState = () => controller.handle({ type: 'GET_CONFIRMATION', requestId: flow.requestId }, confirmSender);
-  const api = { runtime: { id, getURL: extensionURL, getManifest: () => ({ version: '2.7.0' }) },
+  const api = { runtime: { id, getURL: extensionURL, getManifest: () => ({ version: '2.8.0' }) },
     storage: { local: storage({ schemaVersion: 2, profile, settings: { model: DEFAULT_MODEL, rememberKey: false } }), session: storage({ secret: 'FICTIONAL_TEST_KEY' }) },
     tabs: { query: async () => [{ id: 1, url, status: 'complete' }], get: async () => ({ id: 1, url, status: 'complete' }),
       sendMessage: async (_, message) => run(`__labSend(${JSON.stringify(message)})`) },
@@ -158,7 +158,7 @@ try {
     try {
       const path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
       if (path === '/__lab-worker.js') {
-        res.setHeader('Content-Type', 'text/javascript'); res.end(`globalThis.chrome={runtime:{getManifest:()=>({version:'2.7.0'}),sendMessage:async()=>(${JSON.stringify(uiState)})}};`); return;
+        res.setHeader('Content-Type', 'text/javascript'); res.end(`globalThis.chrome={runtime:{getManifest:()=>({version:'2.8.0'}),sendMessage:async()=>(${JSON.stringify(uiState)})}};`); return;
       }
       const file = resolve(root, '.' + path); if (!file.startsWith(root + sep)) throw new Error('Invalid path');
       let body = await readFile(file);

@@ -81,6 +81,11 @@ test('网页字段元数据剥离 selector、已有值和任意内容', () => {
 });
 test('安装包只授权 DeepSeek 和手动当前页，所有 UI 资源存在且不包含 PDF', () => {
   const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
+  assert.equal(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version, manifest.version);
+  for (const [file, constant] of [['confirm/confirm.js', 'UI_VERSION'], ['content/content.js', 'CONTENT_VERSION']]) {
+    const code = readFileSync(new URL('../' + file, import.meta.url), 'utf8');
+    assert.equal(new RegExp(`const ${constant} = '([^']+)'`).exec(code)?.[1], manifest.version, `${file} must load the installed version`);
+  }
   assert.deepEqual(manifest.host_permissions, ['https://api.deepseek.com/*']);
   assert.deepEqual(manifest.permissions, ['storage', 'activeTab', 'scripting']);
   assert.equal(manifest.content_scripts, undefined);

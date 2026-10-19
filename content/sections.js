@@ -166,6 +166,13 @@
       if (before >= desired) continue;
       if (candidates.length !== 1 || roots.size !== 1) { report.message = '存在多个添加入口，未自动点击，请手动补足。'; continue; }
       const bound = candidates[0];
+      if (!before && hooks.openGate) {
+        hooks.check();
+        await hooks.openGate(bound.root);
+        hooks.check();
+        before = inspect(hooks.elements(), hooks).counts[section] || 0;
+        report.added += Math.max(0, before - report.existing);
+      }
       while (before < desired && clicks < 40) {
         hooks.check();
         if (!bound.root.isConnected) { report.message = '经历区块已被替换，请重新检测。'; break; }
